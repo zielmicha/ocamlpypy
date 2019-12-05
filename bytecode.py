@@ -1,5 +1,6 @@
 from __future__ import print_function
 import struct, sys, array, io
+import colorama
 
 trailer_magic = b'Caml1999X011'
 
@@ -260,6 +261,10 @@ class Prims:
         data = data[ofs : ofs + length]
         print('out', repr(data))
 
+    def caml_format_int(self, fmt, n):
+        #print('fmt', fmt)
+        return make_string(fmt % (to_int(n)))
+
 class Int64:
     def __init__(self, i):
         self.i = i
@@ -316,6 +321,9 @@ def to_uint(a):
 def make_int(a):
     return a
 
+def is_int(a):
+    return isinstance(a, (int, long))
+
 def set_code_val(block, pc):
     block.set_field(0, make_int(pc & 0xFFFFFFFF))
 
@@ -324,6 +332,14 @@ def code_val(block):
 
 def to_pc(x):
     return to_int(x) & 0xFFFFFFFF
+
+def offset_field(v, n):
+    print('offset_field', v._envoffsettop, n,'+', v._envoffsetdelta)
+    f = n + v._envoffsetdelta
+    if f == 0:
+        return v._envoffsettop
+    else:
+        return v._envoffsettop.field(f)
 
 def eval_bc(prims, global_data, bc, stack):
     accu = 0
@@ -346,9 +362,13 @@ def eval_bc(prims, global_data, bc, stack):
     def c_call(n, *args):
         return prims.call(n, *args)
 
+    def _set_code_val(b, pc):
+        assert pc >= 0 and pc < len(bc)
+        set_code_val(b, pc)
+
     while True:
         instr = bc[pc]
-        dbg('pc', pc, 'instr', opcode_list[instr], 'accu', repr(accu)[:60])
+        dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', repr(stack)[:100], '__env', repr(env)[:100])
         pc += 1
 
         if instr == OP_ACC0:
@@ -473,11 +493,13 @@ def eval_bc(prims, global_data, bc, stack):
             pc += 1
             slotsize = bc[pc]
             newsp = slotsize - nargs
-            i = nargs - 1
+
+            for i in range(nargs): dbg('arg', sp(i))
 
             def set_sp(target, src):
                 stack[len(stack) - 1 - target] = sp(src)
 
+            i = nargs - 1
             while i >= 0:
                 set_sp(newsp + i, i)
                 i -= 1
@@ -560,7 +582,7 @@ def eval_bc(prims, global_data, bc, stack):
                 accu.set_field(i + 1, sp(0))
                 pop()
 
-            set_code_val(accu, pc + bc[pc])
+            _set_code_val(accu, pc + bc[pc])
             pc += 1
         elif instr == OP_CLOSUREREC:
             nfuncs = bc[pc]
@@ -577,17 +599,19 @@ def eval_bc(prims, global_data, bc, stack):
                 accu.set_field(nfuncs * 2 - 1 + i, sp(0))
                 pop()
 
-            accu.set_field(0, pc + bc[pc])
+            dbg('init', pc + bc[pc])
+            _set_code_val(accu, pc + bc[pc])
             push(accu)
-            # TODO: not accurate
-            b_prev = None
+            accu._envoffsettop = accu
+            accu._envoffsetdelta = 0
             for i in range(1, nfuncs):
                 b = make_block(1, Infix_tag)
-                b.set_field(0, bc[pc + i])
+                b._envoffsettop = accu
+                b._envoffsetdelta = i * 2
+                b.set_field(0, to_int(pc + bc[pc + i]))
                 push(b)
-                if b_prev is not None:
-                    b_prev._next = b
-                b_prev = b
+                accu.set_field(i * 2, b)
+                accu.set_field(i * 2 - 1, 'closureoffsettaint')
             pc += nfuncs
 
         elif instr == OP_OFFSETCLOSUREM2:
@@ -595,11 +619,11 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_OFFSETCLOSURE0:
             accu = env
         elif instr == OP_OFFSETCLOSURE2:
-            accu = env.get_next(2)
+            accu = offset_field(env, 2) # offset_field
         elif instr == OP_OFFSETCLOSURE:
             n = bc[pc]
             pc += 1
-            accu = env.get_next(n)
+            accu = offset_field(env, n) # offset_field
         elif instr == OP_PUSHOFFSETCLOSUREM2:
             unsupp()
         elif instr == OP_PUSHOFFSETCLOSURE0:
@@ -607,12 +631,12 @@ def eval_bc(prims, global_data, bc, stack):
             accu = env
         elif instr == OP_PUSHOFFSETCLOSURE2:
             push(accu)
-            accu = env.get_next(2)
+            accu = offset_field(env, 2) # offset_field
         elif instr == OP_PUSHOFFSETCLOSURE:
             push(accu)
             n = bc[pc]
             pc += 1
-            accu = env.get_next(n)
+            accu = offset_field(env, n) # offset_field
         elif instr == OP_GETGLOBAL:
             n = bc[pc]
             pc += 1
@@ -880,7 +904,7 @@ def eval_bc(prims, global_data, bc, stack):
             pc += 1
             accu = Val_unit
         elif instr == OP_ISINT:
-            unsupp()
+            accu = make_int(1 if is_int(accu) else 0)
         elif instr == OP_GETMETHOD:
             unsupp()
         elif instr == OP_BEQ:
@@ -954,7 +978,7 @@ def eval_bc(prims, global_data, bc, stack):
 
 if __name__ == '__main__':
     exe_dict = parse_executable(open(sys.argv[1], 'rb').read())
-    bytecode = array.array('I', exe_dict['CODE'])
+    bytecode = array.array('i', exe_dict['CODE'])
     prims = Prims(exe_dict['PRIM'].decode().split('\0'))
     global_data = unmarshal(io.BytesIO(exe_dict['DATA']))._fields
     print(global_data)
