@@ -1,5 +1,5 @@
 from __future__ import print_function
-import struct, sys, array
+import struct, sys, array, io
 
 trailer_magic = b'Caml1999X011'
 
@@ -26,8 +26,13 @@ def parse_executable(data):
 
     return section_data
 
+def trace_call(env, args):
+    dbg('call', code_val(env), args)
+
 Closure_tag = 247
+Object_tag = 248
 Infix_tag = 249
+String_tag = 252
 Val_unit = 0
 
 opcode_list = [ 'OP_ACC0', 'OP_ACC1', 'OP_ACC2', 'OP_ACC3', 'OP_ACC4', 'OP_ACC5', 'OP_ACC6', 'OP_ACC7', 'OP_ACC', 'OP_PUSH', 'OP_PUSHACC0', 'OP_PUSHACC1', 'OP_PUSHACC2', 'OP_PUSHACC3', 'OP_PUSHACC4', 'OP_PUSHACC5', 'OP_PUSHACC6', 'OP_PUSHACC7', 'OP_PUSHACC', 'OP_POP', 'OP_ASSIGN', 'OP_ENVACC1', 'OP_ENVACC2', 'OP_ENVACC3', 'OP_ENVACC4', 'OP_ENVACC', 'OP_PUSHENVACC1', 'OP_PUSHENVACC2', 'OP_PUSHENVACC3', 'OP_PUSHENVACC4', 'OP_PUSHENVACC', 'OP_PUSH_RETADDR', 'OP_APPLY', 'OP_APPLY1', 'OP_APPLY2', 'OP_APPLY3', 'OP_APPTERM', 'OP_APPTERM1', 'OP_APPTERM2', 'OP_APPTERM3', 'OP_RETURN', 'OP_RESTART', 'OP_GRAB', 'OP_CLOSURE', 'OP_CLOSUREREC', 'OP_OFFSETCLOSUREM2', 'OP_OFFSETCLOSURE0', 'OP_OFFSETCLOSURE2', 'OP_OFFSETCLOSURE', 'OP_PUSHOFFSETCLOSUREM2', 'OP_PUSHOFFSETCLOSURE0', 'OP_PUSHOFFSETCLOSURE2', 'OP_PUSHOFFSETCLOSURE', 'OP_GETGLOBAL', 'OP_PUSHGETGLOBAL', 'OP_GETGLOBALFIELD', 'OP_PUSHGETGLOBALFIELD', 'OP_SETGLOBAL', 'OP_ATOM0', 'OP_ATOM', 'OP_PUSHATOM0', 'OP_PUSHATOM', 'OP_MAKEBLOCK', 'OP_MAKEBLOCK1', 'OP_MAKEBLOCK2', 'OP_MAKEBLOCK3', 'OP_MAKEFLOATBLOCK', 'OP_GETFIELD0', 'OP_GETFIELD1', 'OP_GETFIELD2', 'OP_GETFIELD3', 'OP_GETFIELD', 'OP_GETFLOATFIELD', 'OP_SETFIELD0', 'OP_SETFIELD1', 'OP_SETFIELD2', 'OP_SETFIELD3', 'OP_SETFIELD', 'OP_SETFLOATFIELD', 'OP_VECTLENGTH', 'OP_GETVECTITEM', 'OP_SETVECTITEM', 'OP_GETBYTESCHAR', 'OP_SETBYTESCHAR', 'OP_BRANCH', 'OP_BRANCHIF', 'OP_BRANCHIFNOT', 'OP_SWITCH', 'OP_BOOLNOT', 'OP_PUSHTRAP', 'OP_POPTRAP', 'OP_RAISE', 'OP_CHECK_SIGNALS', 'OP_C_CALL1', 'OP_C_CALL2', 'OP_C_CALL3', 'OP_C_CALL4', 'OP_C_CALL5', 'OP_C_CALLN', 'OP_CONST0', 'OP_CONST1', 'OP_CONST2', 'OP_CONST3', 'OP_CONSTINT', 'OP_PUSHCONST0', 'OP_PUSHCONST1', 'OP_PUSHCONST2', 'OP_PUSHCONST3', 'OP_PUSHCONSTINT', 'OP_NEGINT', 'OP_ADDINT', 'OP_SUBINT', 'OP_MULINT', 'OP_DIVINT', 'OP_MODINT', 'OP_ANDINT', 'OP_ORINT', 'OP_XORINT', 'OP_LSLINT', 'OP_LSRINT', 'OP_ASRINT', 'OP_EQ', 'OP_NEQ', 'OP_LTINT', 'OP_LEINT', 'OP_GTINT', 'OP_GEINT', 'OP_OFFSETINT', 'OP_OFFSETREF', 'OP_ISINT', 'OP_GETMETHOD', 'OP_BEQ', 'OP_BNEQ', 'OP_BLTINT', 'OP_BLEINT', 'OP_BGTINT', 'OP_BGEINT', 'OP_ULTINT', 'OP_UGEINT', 'OP_BULTINT', 'OP_BUGEINT', 'OP_GETPUBMET', 'OP_GETDYNMET', 'OP_STOP', 'OP_EVENT', 'OP_BREAK', 'OP_RERAISE', 'OP_RAISE_NOTRACE', 'OP_GETSTRINGCHAR' ]
@@ -39,13 +44,156 @@ def dbg(*args):
     #print(*args)
     pass
 
+def block_with_values(tag, arr):
+    b = Block(tag=tag, size=len(arr))
+    b._fields = list(arr)
+    return b
+
+def make_array(arr):
+    return block_with_values(tag=0, arr=arr)
+
+PREFIX_SMALL_BLOCK = 0x80
+PREFIX_SMALL_INT = 0x40
+PREFIX_SMALL_STRING = 0x20
+CODE_INT8 = 0x0
+CODE_INT16 = 0x1
+CODE_INT32 = 0x2
+CODE_INT64 = 0x3
+CODE_SHARED8 = 0x4
+CODE_SHARED16 = 0x5
+CODE_SHARED32 = 0x6
+CODE_SHARED64 = 0x14
+CODE_BLOCK32 = 0x8
+CODE_BLOCK64 = 0x13
+CODE_STRING8 = 0x9
+CODE_STRING32 = 0xA
+CODE_STRING64 = 0x15
+CODE_DOUBLE_BIG = 0xB
+CODE_DOUBLE_LITTLE = 0xC
+CODE_DOUBLE_ARRAY8_BIG = 0xD
+CODE_DOUBLE_ARRAY8_LITTLE = 0xE
+CODE_DOUBLE_ARRAY32_BIG = 0xF
+CODE_DOUBLE_ARRAY32_LITTLE = 0x7
+CODE_DOUBLE_ARRAY64_BIG = 0x16
+CODE_DOUBLE_ARRAY64_LITTLE = 0x17
+CODE_CODEPOINTER = 0x10
+CODE_INFIXPOINTER = 0x11
+CODE_CUSTOM = 0x12
+CODE_CUSTOM_LEN = 0x18
+CODE_CUSTOM_FIXED = 0x19
+
+
+class Unmarshaler:
+    def __init__(self):
+        self.intern_table = []
+
+    def intern(self, o):
+        self.intern_table.append(o)
+        return o
+
+    def _block(self, data, tag, size):
+        if size == 0:
+            v = ATOMS[tag]
+        else:
+            v = self.intern(block_with_values(tag, [
+                self.unmarshal(data)
+                for _ in range(size)
+            ]))
+
+            if tag == Object_tag:
+                # TODO: refresh obj id
+                return '_objects_not_supported'
+
+            return v
+
+    def get_shared(self, id):
+        assert id >= 0
+        assert id < len(self.intern_table)
+        return self.intern_table[-id]
+
+    def unmarshal(self, data):
+        code = ord(data.read(1))
+
+        def _wosize_hd(hd): return hd >> 10
+        def _tag_hd(hd): return hd & 0xFF
+
+        if code >= PREFIX_SMALL_INT:
+            if code >= PREFIX_SMALL_BLOCK:
+                tag = code & 0xF
+                size = (code >> 4) & 0x7
+                return self._block(data, tag, size)
+            else:
+                return make_int(code & 0x3F)
+        else:
+            if code >= PREFIX_SMALL_STRING:
+                length = code & 0x1F
+                return self.intern(make_string(data.read(length)))
+            else:
+                if code == CODE_INT8:
+                    i, = struct.unpack('>b', data.read(1))
+                    return make_int(i)
+                if code == CODE_INT16:
+                    i, = struct.unpack('>h', data.read(2))
+                    return make_int(i)
+                if code == CODE_INT32:
+                    i, = struct.unpack('>i', data.read(2))
+                    return make_int(i)
+                if code == CODE_INT64:
+                    i, = struct.unpack('>l', data.read(2))
+                    return make_int(i)
+                if code == CODE_BLOCK32:
+                    hd, = struct.unpack('>I', data.read(4))
+                    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
+                if code == CODE_BLOCK64:
+                    hd, = struct.unpack('>Q', data.read(8))
+                    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
+                if code == CODE_STRING8:
+                    len, = struct.unpack('B', data.read(1))
+                    return self.intern(make_string(data.read(len)))
+                if code == CODE_SHARED8:
+                    id, = struct.unpack('B', data.read(1))
+                    return self.get_shared(id)
+                if code == CODE_CUSTOM:
+                    id = data.read(3)
+                    if id == '_j\0':
+                        n, = struct.unpack('<q', data.read(8))
+                        return Int64(n)
+                    else:
+                        raise Exception('unknown custom %r' % id)
+                if code == CODE_DOUBLE_LITTLE:
+                    f, = struct.unpack('<d', data.read(8))
+                    return self.intern(f)
+
+                raise Exception('code 0x%x' % code)
+
+def make_string(data):
+    assert type(data) == str
+    return data
+
+def unmarshal(data):
+    header = data.read(20)
+    magic, = struct.unpack('>I', header[:4])
+    if magic == 0x8495A6BF:
+        header += data.read(12)
+
+        _, data_len, num_objects, whsize = struct.unpack('>ILLL', header[4:])
+    elif magic == 0x8495A6BE:
+        data_len, num_objects, _, whsize = struct.unpack('>IIII', header[4:])
+    else:
+        raise Exception('bad magic')
+
+    v = Unmarshaler().unmarshal(data)
+    print(repr(data.read()))
+    return v
+
 class Prims:
     def __init__(self, names):
         self.names = names
 
     def call(self, index, *args):
         name = self.names[index]
-        getattr(self, name)(*args)
+        dbg('ccall', name, args)
+        return getattr(self, name)(*args)
 
     def caml_register_named_value(self, vname, val):
         print('named:', vname, val)
@@ -54,13 +202,13 @@ class Prims:
         return make_int(666)
 
     def caml_int64_float_of_bits(self, _):
-        return 0 # TODO
+        return 0.666 # TODO
 
     def caml_ml_open_descriptor_in(self, _):
-        return 0 # TODO
+        return '_stdin' # TODO
 
     def caml_ml_open_descriptor_out(self, _):
-        return 0 # TODO
+        return '_stdout' # TODO
 
     def caml_ml_out_channels_list(self, _):
         return 0 # TODO
@@ -68,10 +216,69 @@ class Prims:
     def caml_ml_output_char(self, channel, ch):
         print('out', channel, chr(ch))
 
+    def caml_create_bytes(self, length):
+        return bytearray(to_int(length))
+
+    def caml_sys_get_argv(self, _):
+        return make_array(["ocamlpypy", make_array([])])
+
+    def caml_sys_get_config(self, _):
+        return make_array([
+            'pypy',
+            make_int(64), # bits
+            make_int(0) # little endian
+        ])
+
+    def caml_sys_const_backend_type(self, _):
+        return make_int(1) # bytecode
+
+    def caml_sys_const_big_endian(self, _):
+        return make_int(0)
+
+    def caml_sys_const_word_size(self, _):
+        return make_int(64)
+
+    def caml_sys_const_int_size(self, _):
+        return make_int(64) # make_int(63) ??
+
+    def caml_sys_const_ostype_unix(self, _):
+        return make_int(1)
+
+    def caml_sys_const_ostype_win32(self, _):
+        return make_int(0)
+
+    def caml_sys_const_ostype_cygwin(self, _):
+        return make_int(0)
+
+    def caml_sys_const_max_wosize(self, _):
+        return 2**20
+
+    def caml_ml_string_length(self, s):
+        return make_int(len(s))
+
+    def caml_ml_output(self, stream, data, ofs, length):
+        data = data[ofs : ofs + length]
+        print('out', repr(data))
+
+class Int64:
+    def __init__(self, i):
+        self.i = i
+
+    def __repr__(self):
+        return 'Int64(%s)' % self.i
+
 class Block:
     def __init__(self, tag, size):
         self._tag = tag
         self._fields = [None]*size
+        self._next = None
+
+    def get_next(self, i):
+        1/0
+        if i == 0:
+            return self
+        else:
+            return self._next.get_next(i-1)
 
     def field(self, i):
         return self._fields[i]
@@ -84,16 +291,23 @@ class Block:
         #return 'Block#%x(%d, %s)' % (id(self), self._tag, self._fields)
         return 'Block(%d, %s)' % (self._tag, self._fields)
 
+def is_block(x):
+    return isinstance(x, Block)
+
 ATOMS = [ Block(tag=i, size=0) for i in range(256) ]
 
 def make_block(size, tag):
     b = Block(tag, size)
     return b
 
+def block_tag(block):
+    return block._tag
+
 def is_true(a):
     return bool(a)
 
 def to_int(a):
+    assert isinstance(a, (int, long)), repr(a)
     return a
 
 def to_uint(a):
@@ -107,6 +321,9 @@ def set_code_val(block, pc):
 
 def code_val(block):
     return to_int(block.field(0)) & 0xFFFFFFFF
+
+def to_pc(x):
+    return to_int(x) & 0xFFFFFFFF
 
 def eval_bc(prims, global_data, bc, stack):
     accu = 0
@@ -131,8 +348,8 @@ def eval_bc(prims, global_data, bc, stack):
 
     while True:
         instr = bc[pc]
+        dbg('pc', pc, 'instr', opcode_list[instr], 'accu', repr(accu)[:60])
         pc += 1
-        dbg('pc', pc, 'instr', opcode_list[instr], 'accu', accu)
 
         if instr == OP_ACC0:
             accu = sp(0)
@@ -224,21 +441,31 @@ def eval_bc(prims, global_data, bc, stack):
             pc += 1
         elif instr == OP_APPLY:
             extra_args = bc[pc]-1
+            trace_call(accu, None)
             pc = code_val(accu)
             env = accu
         elif instr == OP_APPLY1:
-            arg1 = sp(0)
-            pop()
+            arg1 = pop()
             push(make_int(extra_args))
             push(env)
             push(make_int(pc))
             push(arg1)
-            dbg('calling', accu)
+            trace_call(accu, [arg1])
             pc = code_val(accu)
             env = accu
             extra_args = 0
         elif instr == OP_APPLY2:
-            unsupp()
+            arg1 = pop()
+            arg2 = pop()
+            trace_call(accu, [arg1, arg2])
+            push(make_int(extra_args))
+            push(env)
+            push(make_int(pc))
+            push(arg2)
+            push(arg1)
+            pc = code_val(accu)
+            env = accu
+            extra_args = 1
         elif instr == OP_APPLY3:
             unsupp()
         elif instr == OP_APPTERM:
@@ -247,24 +474,47 @@ def eval_bc(prims, global_data, bc, stack):
             slotsize = bc[pc]
             newsp = slotsize - nargs
             i = nargs - 1
+
+            def set_sp(target, src):
+                stack[len(stack) - 1 - target] = sp(src)
+
             while i >= 0:
                 set_sp(newsp + i, i)
                 i -= 1
             for _ in range(newsp): pop()
+            trace_call(accu, None)
             pc = code_val(accu)
             env = accu
             extra_args += nargs - 1
         elif instr == OP_APPTERM1:
             arg1 = sp(0)
+            trace_call(accu, [arg1])
             for _ in range(bc[pc]): pop()
             push(arg1)
-            dbg('calling', accu)
             pc = code_val(accu)
             env = accu
         elif instr == OP_APPTERM2:
-            unsupp()
+            arg1 = sp(0)
+            arg2 = sp(1)
+            trace_call(accu, [arg1, arg2])
+            for _ in range(bc[pc]): pop()
+            push(arg2)
+            push(arg1)
+            pc = code_val(accu)
+            env = accu
+            extra_args += 1
         elif instr == OP_APPTERM3:
-            unsupp()
+            arg1 = sp(0)
+            arg2 = sp(1)
+            arg3 = sp(2)
+            trace_call(accu, [arg1, arg2, arg3])
+            for _ in range(bc[pc]): pop()
+            push(arg3)
+            push(arg2)
+            push(arg1)
+            pc = code_val(accu)
+            env = accu
+            extra_args += 2
         elif instr == OP_RETURN:
             npop = bc[pc]
             pc += 1
@@ -275,13 +525,27 @@ def eval_bc(prims, global_data, bc, stack):
                 pc = code_val(accu)
                 env = accu
             else:
-                pc = pop()
+                pc = to_pc(pop())
                 env = pop()
                 extra_args = to_int(pop())
         elif instr == OP_RESTART:
             unsupp()
         elif instr == OP_GRAB:
-            unsupp()
+            required = bc[pc]
+            pc += 1
+            if extra_args >= required:
+                extra_args -= required
+            else:
+                num_args = 1 + extra_args
+                print(stack, num_args)
+                acc = make_block(num_args + 2, Closure_tag)
+                acc.set_field(1, env)
+                for i in range(num_args):
+                    acc.set_field(i + 2, pop())
+                set_code_val(accu, pc - 3)
+                pc = to_pc(pop())
+                env = pop()
+                extra_args = make_int(pop())
         elif instr == OP_CLOSURE:
             nvars = bc[pc]
             pc += 1
@@ -310,34 +574,45 @@ def eval_bc(prims, global_data, bc, stack):
 
             accu = make_block(blksize, Closure_tag)
             for i in range(nvars):
-                accu.set_field(nfucs * 2 - 1 + i, sp(0))
+                accu.set_field(nfuncs * 2 - 1 + i, sp(0))
                 pop()
 
             accu.set_field(0, pc + bc[pc])
             push(accu)
             # TODO: not accurate
+            b_prev = None
             for i in range(1, nfuncs):
                 b = make_block(1, Infix_tag)
                 b.set_field(0, bc[pc + i])
                 push(b)
+                if b_prev is not None:
+                    b_prev._next = b
+                b_prev = b
             pc += nfuncs
 
         elif instr == OP_OFFSETCLOSUREM2:
             unsupp()
         elif instr == OP_OFFSETCLOSURE0:
-            unsupp()
+            accu = env
         elif instr == OP_OFFSETCLOSURE2:
-            unsupp()
+            accu = env.get_next(2)
         elif instr == OP_OFFSETCLOSURE:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            accu = env.get_next(n)
         elif instr == OP_PUSHOFFSETCLOSUREM2:
             unsupp()
         elif instr == OP_PUSHOFFSETCLOSURE0:
-            unsupp()
+            push(accu)
+            accu = env
         elif instr == OP_PUSHOFFSETCLOSURE2:
-            unsupp()
+            push(accu)
+            accu = env.get_next(2)
         elif instr == OP_PUSHOFFSETCLOSURE:
-            unsupp()
+            push(accu)
+            n = bc[pc]
+            pc += 1
+            accu = env.get_next(n)
         elif instr == OP_GETGLOBAL:
             n = bc[pc]
             pc += 1
@@ -359,10 +634,9 @@ def eval_bc(prims, global_data, bc, stack):
             n = bc[pc]
             pc += 1
             accu = global_data[n]
-            dbg('get', n, '->', accu)
             n = bc[pc]
             pc += 1
-            dbg('__ field', n, accu.field(n))
+            #dbg('__ field', n, accu.field(n))
             accu = accu.field(n)
         elif instr == OP_SETGLOBAL:
             n = bc[pc]
@@ -406,15 +680,15 @@ def eval_bc(prims, global_data, bc, stack):
             pc += 1
             b = make_block(2, tag)
             b.set_field(0, accu)
-            b.set_field(0, pop())
+            b.set_field(1, pop())
             accu = b
         elif instr == OP_MAKEBLOCK3:
             tag = bc[pc]
             pc += 1
             b = make_block(3, tag)
             b.set_field(0, accu)
-            b.set_field(0, pop())
-            b.set_field(0, pop())
+            b.set_field(1, pop())
+            b.set_field(2, pop())
             accu = b
         elif instr == OP_MAKEFLOATBLOCK:
             1/0
@@ -481,14 +755,17 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_SWITCH:
             sizes = bc[pc]
             pc += 1
+            dbg('switch', accu)
             if is_block(accu):
                 index = block_tag(accu)
                 assert index < (sizes >> 16)
-                pc += pc[(sizes & 0xFFFF) + index]
+                dbg('switch_block', sizes & 0xFFFF, index)
+                pc += bc[pc + (sizes & 0xFFFF) + index]
             else:
                 index = to_int(accu)
                 assert index < (sizes & 0xFFFF)
                 pc += bc[pc + index]
+            dbg('switch_pc', pc)
         elif instr == OP_BOOLNOT:
             accu = make_int(1 - to_int(accu))
         elif instr == OP_PUSHTRAP:
@@ -500,6 +777,7 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_CHECK_SIGNALS:
             unsupp()
         elif instr == OP_C_CALL1:
+            dbg('stack', stack)
             n = bc[pc]
             pc += 1
             accu = c_call(n, accu)
@@ -583,17 +861,17 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_ASRINT:
             accu = make_int(to_int(accu) >> pop()) # TODO: artmetic shift
         elif instr == OP_EQ:
-            unsupp()
+            accu = make_int(pop() == accum)
         elif instr == OP_NEQ:
-            unsupp()
+            accu = make_int(pop() != accum)
         elif instr == OP_LTINT:
-            unsupp()
+            accu = make_int(pop() < accum)
         elif instr == OP_LEINT:
-            unsupp()
+            accu = make_int(pop() <= accum)
         elif instr == OP_GTINT:
-            unsupp()
+            accu = make_int(pop() > accum)
         elif instr == OP_GEINT:
-            unsupp()
+            accu = make_int(pop() >= accum)
         elif instr == OP_OFFSETINT:
             accu += bc[pc]
             pc += 1
@@ -606,17 +884,47 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_GETMETHOD:
             unsupp()
         elif instr == OP_BEQ:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n == to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_BNEQ:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n != to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_BLTINT:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n < to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_BLEINT:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n <= to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_BGTINT:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n > to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_BGEINT:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if n >= to_int(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_ULTINT:
             unsupp()
         elif instr == OP_UGEINT:
@@ -648,7 +956,9 @@ if __name__ == '__main__':
     exe_dict = parse_executable(open(sys.argv[1], 'rb').read())
     bytecode = array.array('I', exe_dict['CODE'])
     prims = Prims(exe_dict['PRIM'].decode().split('\0'))
-    print( { k:len(v) for k,v in exe_dict.items() })
-    stack = []
-    global_data = [ 'globaltaint%d' % i for i in range(100) ]
-    eval_bc(prims=prims, global_data=global_data, bc=bytecode, stack=stack)
+    global_data = unmarshal(io.BytesIO(exe_dict['DATA']))._fields
+    print(global_data)
+    if 1:
+        print( { k:len(v) for k,v in exe_dict.items() })
+        stack = []
+        eval_bc(prims=prims, global_data=global_data, bc=bytecode, stack=stack)
