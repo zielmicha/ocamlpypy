@@ -1,5 +1,5 @@
 from __future__ import print_function
-import struct, sys, array, io
+import struct, sys, array, io, os
 import colorama
 
 trailer_magic = b'Caml1999X011'
@@ -42,7 +42,7 @@ for _i, _opcode in enumerate(opcode_list):
     globals()[_opcode] = _i
 
 def dbg(*args):
-    #print(*args)
+    print(*args)
     pass
 
 def block_with_values(tag, arr):
@@ -87,6 +87,7 @@ CODE_CUSTOM_FIXED = 0x19
 class Unmarshaler:
     def __init__(self):
         self.intern_table = []
+        self._lvl = 0
 
     def intern(self, o):
         self.intern_table.append(o)
@@ -96,6 +97,7 @@ class Unmarshaler:
         if size == 0:
             v = ATOMS[tag]
         else:
+            print('read', size)
             v = self.intern(block_with_values(tag, [
                 self.unmarshal(data)
                 for _ in range(size)
@@ -108,12 +110,15 @@ class Unmarshaler:
             return v
 
     def get_shared(self, id):
-        assert id >= 0
-        assert id < len(self.intern_table)
-        return self.intern_table[-id]
+        assert id > 0, id
+        assert id <= len(self.intern_table), (id, len(self.intern_table))
+        return self.intern_table[len(self.intern_table)-id]
 
     def unmarshal(self, data):
-        code = ord(data.read(1))
+        lvl = self._lvl
+        self._lvl += 1
+
+        code, = struct.unpack('B', data.read(1))
 
         def _wosize_hd(hd): return hd >> 10
         def _tag_hd(hd): return hd & 0xFF
@@ -137,10 +142,10 @@ class Unmarshaler:
                     i, = struct.unpack('>h', data.read(2))
                     return make_int(i)
                 if code == CODE_INT32:
-                    i, = struct.unpack('>i', data.read(2))
+                    i, = struct.unpack('>i', data.read(4))
                     return make_int(i)
                 if code == CODE_INT64:
-                    i, = struct.unpack('>l', data.read(2))
+                    i, = struct.unpack('>q', data.read(8))
                     return make_int(i)
                 if code == CODE_BLOCK32:
                     hd, = struct.unpack('>I', data.read(4))
@@ -151,14 +156,36 @@ class Unmarshaler:
                 if code == CODE_STRING8:
                     len, = struct.unpack('B', data.read(1))
                     return self.intern(make_string(data.read(len)))
+                if code == CODE_STRING32:
+                    len, = struct.unpack('>I', data.read(4))
+                    return self.intern(make_string(data.read(len)))
                 if code == CODE_SHARED8:
                     id, = struct.unpack('B', data.read(1))
+                    return self.get_shared(id)
+                if code == CODE_SHARED16:
+                    id, = struct.unpack('>H', data.read(2))
+                    return self.get_shared(id)
+                if code == CODE_SHARED32:
+                    id, = struct.unpack('>I', data.read(4))
                     return self.get_shared(id)
                 if code == CODE_CUSTOM:
                     id = data.read(3)
                     if id == '_j\0':
                         n, = struct.unpack('<q', data.read(8))
                         return Int64(n)
+                    elif id == '_n\0': # nativeint
+                        t, = struct.unpack('B', data.read(1))
+                        if t == 2:
+                            n, = struct.unpack('>q', data.read(8))
+                        elif t == 1:
+                            n, = struct.unpack('>i', data.read(4))
+                        else:
+                            raise Exception('bad tag')
+                        print('nativeint', id, n, t)
+                        return Int64(n)
+                    elif id == '_i\0':
+                        n, = struct.unpack('<i', data.read(4))
+                        return Int32(n)
                     else:
                         raise Exception('unknown custom %r' % id)
                 if code == CODE_DOUBLE_LITTLE:
@@ -168,6 +195,10 @@ class Unmarshaler:
                 raise Exception('code 0x%x' % code)
 
 def make_string(data):
+    assert type(data) == str
+    return data
+
+def to_str(data):
     assert type(data) == str
     return data
 
@@ -184,7 +215,9 @@ def unmarshal(data):
         raise Exception('bad magic')
 
     v = Unmarshaler().unmarshal(data)
-    print(repr(data.read()))
+    leftover = data.read()
+    #for vv in v._fields: print('-', repr(vv))
+    assert not leftover, repr(leftover)
     return v
 
 class Prims:
@@ -222,6 +255,9 @@ class Prims:
 
     def caml_sys_get_argv(self, _):
         return make_array(["ocamlpypy", make_array([])])
+
+    def caml_sys_getenv(self, name):
+        return make_string(os.environ.get(to_str(name), ''))
 
     def caml_sys_get_config(self, _):
         return make_array([
@@ -265,7 +301,41 @@ class Prims:
         #print('fmt', fmt)
         return make_string(fmt % (to_int(n)))
 
+    def caml_nativeint_shift_left(self, a, b):
+        assert isinstance(a, Int64), a
+        return Int64((a.i << to_int(b)) & 0xFFFFFFFF)
+
+    def caml_nativeint_to_int(self, n):
+        assert isinstance(n, Int64), n
+        print('caml_nativeint_to_int', n)
+        return make_int(n.i)
+
+    def caml_nativeint_sub(self, a, b):
+        assert isinstance(a, Int64), a
+        assert isinstance(b, Int64), b
+        return Int64(a.i - b.i)
+
+    def caml_make_vect(self, size, init):
+        return make_array([ init for i in range(size) ])
+
+    def caml_obj_block(self, tag, size):
+        b = make_block(tag, size)
+        for i in range(size): b.set_field(i, make_int(0))
+        return b
+
+    def caml_obj_dup(self, o):
+        b = make_block(tag=o._tag, size=len(o._fields))
+        for i in range(len(o._fields)): b.set_field(i, b.field(i))
+        return b
+
 class Int64:
+    def __init__(self, i):
+        self.i = i
+
+    def __repr__(self):
+        return 'Int64(%s)' % self.i
+
+class Int32:
     def __init__(self, i):
         self.i = i
 
@@ -276,14 +346,6 @@ class Block:
     def __init__(self, tag, size):
         self._tag = tag
         self._fields = [None]*size
-        self._next = None
-
-    def get_next(self, i):
-        1/0
-        if i == 0:
-            return self
-        else:
-            return self._next.get_next(i-1)
 
     def field(self, i):
         return self._fields[i]
@@ -344,8 +406,9 @@ def offset_field(v, n):
 def eval_bc(prims, global_data, bc, stack):
     accu = 0
     extra_args = 0
-    env = None
+    env = 'rootenv'
     pc = 0
+    trap_sp = 0
 
     def unsupp():
         raise Exception('unsupported instr %d = %s' % (instr, opcode_list[instr]))
@@ -368,7 +431,7 @@ def eval_bc(prims, global_data, bc, stack):
 
     while True:
         instr = bc[pc]
-        dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', repr(stack)[:100], '__env', repr(env)[:100])
+        dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', '(' + repr(stack)[-100:] + ')', '__env', repr(env)[:100])
         pc += 1
 
         if instr == OP_ACC0:
@@ -456,7 +519,7 @@ def eval_bc(prims, global_data, bc, stack):
             pc += 1
         elif instr == OP_PUSH_RETADDR:
             push(extra_args)
-            push(Env)
+            push(env)
             push(pc + bc[pc])
             pc += 1
         elif instr == OP_APPLY:
@@ -487,7 +550,19 @@ def eval_bc(prims, global_data, bc, stack):
             env = accu
             extra_args = 1
         elif instr == OP_APPLY3:
-            unsupp()
+            arg1 = pop()
+            arg2 = pop()
+            arg3 = pop()
+            trace_call(accu, [arg1, arg2, arg3])
+            push(make_int(extra_args))
+            push(env)
+            push(make_int(pc))
+            push(arg3)
+            push(arg2)
+            push(arg1)
+            pc = code_val(accu)
+            env = accu
+            extra_args = 2
         elif instr == OP_APPTERM:
             nargs = bc[pc]
             pc += 1
@@ -551,7 +626,12 @@ def eval_bc(prims, global_data, bc, stack):
                 env = pop()
                 extra_args = to_int(pop())
         elif instr == OP_RESTART:
-            unsupp()
+            num_args = len(env._fields) - 2
+            assert num_args >= 0, env
+            for i in range(num_args):
+                push(env.field((num_args - i - 1) + 2))
+            env = env.field(1)
+            extra_args += num_args
         elif instr == OP_GRAB:
             required = bc[pc]
             pc += 1
@@ -560,10 +640,10 @@ def eval_bc(prims, global_data, bc, stack):
             else:
                 num_args = 1 + extra_args
                 print(stack, num_args)
-                acc = make_block(num_args + 2, Closure_tag)
-                acc.set_field(1, env)
+                accu = make_block(num_args + 2, Closure_tag)
+                accu.set_field(1, env)
                 for i in range(num_args):
-                    acc.set_field(i + 2, pop())
+                    accu.set_field(i + 2, pop())
                 set_code_val(accu, pc - 3)
                 pc = to_pc(pop())
                 env = pop()
@@ -646,6 +726,7 @@ def eval_bc(prims, global_data, bc, stack):
             n = bc[pc]
             pc += 1
             accu = global_data[n]
+            # print(n, global_data[n - 2 : n + 3])
         elif instr == OP_GETGLOBALFIELD:
             n = bc[pc]
             pc += 1
@@ -793,9 +874,17 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_BOOLNOT:
             accu = make_int(1 - to_int(accu))
         elif instr == OP_PUSHTRAP:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+
+            push(make_int(extra_args))
+            push(env)
+            push(trap_sp)
+            push(pc + n)
+            trap_sp = len(stack)
         elif instr == OP_POPTRAP:
-            unsupp()
+            trap_sp = sp(1)
+            for _ in range(4): pop()
         elif instr == OP_RAISE:
             unsupp()
         elif instr == OP_CHECK_SIGNALS:
@@ -885,17 +974,17 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_ASRINT:
             accu = make_int(to_int(accu) >> pop()) # TODO: artmetic shift
         elif instr == OP_EQ:
-            accu = make_int(pop() == accum)
+            accu = make_int(pop() == accu)
         elif instr == OP_NEQ:
-            accu = make_int(pop() != accum)
+            accu = make_int(pop() != accu)
         elif instr == OP_LTINT:
-            accu = make_int(pop() < accum)
+            accu = make_int(pop() < accu)
         elif instr == OP_LEINT:
-            accu = make_int(pop() <= accum)
+            accu = make_int(pop() <= accu)
         elif instr == OP_GTINT:
-            accu = make_int(pop() > accum)
+            accu = make_int(pop() > accu)
         elif instr == OP_GEINT:
-            accu = make_int(pop() >= accum)
+            accu = make_int(pop() >= accu)
         elif instr == OP_OFFSETINT:
             accu += bc[pc]
             pc += 1
