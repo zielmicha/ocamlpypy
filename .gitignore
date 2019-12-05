@@ -1,0 +1,7 @@
+*.cmi
+*.cmo
+__pycache__
+.mypy_cache/
+*.pyc
+*.out
+*.dump
