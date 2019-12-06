@@ -5,3 +5,7 @@ __pycache__
 *.pyc
 *.out
 *.dump
+*.opt
+*.o
+*.byte
+*.cmx

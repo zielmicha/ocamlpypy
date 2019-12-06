@@ -41,9 +41,12 @@ opcode_list = [ 'OP_ACC0', 'OP_ACC1', 'OP_ACC2', 'OP_ACC3', 'OP_ACC4', 'OP_ACC5'
 for _i, _opcode in enumerate(opcode_list):
     globals()[_opcode] = _i
 
-def dbg(f):
-    #print(*f())
-    pass
+if os.environ.get('DEBUG'):
+    def dbg(f):
+        print(*f())
+else:
+    def dbg(f):
+        pass
 
 def block_with_values(tag, arr):
     b = Block(tag=tag, size=len(arr))
@@ -189,8 +192,20 @@ class Unmarshaler:
                     else:
                         raise Exception('unknown custom %r' % id)
                 if code == CODE_DOUBLE_LITTLE:
-                    f, = struct.unpack('<d', data.read(8))
+                    f = make_float(struct.unpack('<d', data.read(8))[0])
                     return self.intern(f)
+                if code == CODE_DOUBLE_ARRAY32_LITTLE:
+                    len, = struct.unpack('>I', data.read(32))
+                    return self.intern([
+                        make_float(struct.unpack('<d', data.read(8))[0])
+                        for i in range(len)
+                    ])
+                if code == CODE_DOUBLE_ARRAY8_LITTLE:
+                    len, = struct.unpack('>B', data.read(1))
+                    return self.intern([
+                        make_float(struct.unpack('<d', data.read(8))[0])
+                        for i in range(len)
+                    ])
 
                 raise Exception('code 0x%x' % code)
 
@@ -231,13 +246,13 @@ class Prims:
 
     def caml_register_named_value(self, vname, val):
         # print('named:', vname, val)
-        pass
+        return ATOMS[0]
 
     def caml_fresh_oo_id(self, _):
         return make_int(666)
 
     def caml_int64_float_of_bits(self, _):
-        return 0.666 # TODO
+        return make_float(0.666) # TODO
 
     def caml_ml_open_descriptor_in(self, _):
         return '_stdin' # TODO
@@ -246,11 +261,12 @@ class Prims:
         return '_stdout' # TODO
 
     def caml_ml_out_channels_list(self, _):
-        return 0 # TODO
+        return make_int(0) # TODO
 
     def caml_ml_output_char(self, channel, ch):
         # print('out', channel, chr(ch))
-        sys.stdout.write(chr(ch))
+        sys.stdout.write(chr(to_int(ch)))
+        return make_int(0)
 
     def caml_ml_flush(self, channel):
         sys.stdout.flush()
@@ -259,7 +275,9 @@ class Prims:
         return bytearray(to_int(length))
 
     def caml_sys_get_argv(self, _):
-        return make_array(["ocamlpypy", make_array([])])
+        return make_array(["ocamlpypy", make_array(['ocamlpypy'] + [
+            make_string(arg) for arg in sys.argv[2:]
+        ])])
 
     def caml_sys_getenv(self, name):
         return make_string(os.environ.get(to_str(name), ''))
@@ -293,13 +311,13 @@ class Prims:
         return make_int(0)
 
     def caml_sys_const_max_wosize(self, _):
-        return 2**20
+        return make_int(2**20)
 
     def caml_ml_string_length(self, s):
         return make_int(len(s))
 
     def caml_ml_output(self, stream, data, ofs, length):
-        data = data[ofs : ofs + length]
+        data = data[to_int(ofs) : to_int(ofs) + to_int(length)]
         sys.stdout.write(data)
 
     def caml_format_int(self, fmt, n):
@@ -345,17 +363,21 @@ class Prims:
         assert type(a) == type(b)
         return a != b
 
+    def caml_int_of_string(self, n):
+        return make_int(int(to_str(n)))
+
     def caml_string_equal(self, a, b):
         assert type(a) == type(b)
         return a == b
 
+    def caml_neg_float(self, a):
+        return make_float(-to_float(a))
+
     def caml_div_float(self, a, b):
-        assert type(a) == float and type(b) == float
-        return a / b
+        return make_float(to_float(a) / to_float(b))
 
     def caml_mul_float(self, a, b):
-        assert type(a) == float and type(b) == float
-        return a * b
+        return make_float(to_float(a) * to_float(b))
 
     def caml_int_of_float(self, n):
         return make_int(int(n))
@@ -366,6 +388,9 @@ class Prims:
     def caml_array_sub(self, a, ofs, len):
         return make_array(a._fields[ofs : ofs+len])
 
+    def caml_make_array(self, init):
+        return init
+
     def caml_hash(self, count, limit, seed, obj):
         return make_int(hash(obj)) # TODO
 
@@ -375,35 +400,61 @@ class Prims:
     def caml_array_set_addr(self, array, index, val):
         array.set_field(index, val)
 
+    def caml_array_get(self, array, index):
+        return array.field(index)
+
+    def caml_array_set(self, array, index, val):
+        array.set_field(index, val)
+
     def caml_weak_create(self, len):
-        return None # TODO
+        return '__weak' # TODO
 
     def caml_greaterequal(self, a, b):
         return a >= b # TODO
 
-class Int64:
+    def caml_equal(self, a, b):
+        return a == b # TODO
+
+    def caml_eq_float(self, a, b):
+        return to_float(a) == to_float(b)
+
+    def caml_gc_full_major(self, _):
+        pass
+
+class Root:
+    @staticmethod
+    def check(x):
+        assert isinstance(x, (Root, str, bytearray)), x
+
+class Int64(Root):
     def __init__(self, i):
         self.i = i
 
     def __repr__(self):
         return 'Int64(%s)' % self.i
 
-class Int32:
+class Int32(Root):
     def __init__(self, i):
         self.i = i
 
     def __repr__(self):
-        return 'Int64(%s)' % self.i
+        return 'Int32(%s)' % self.i
 
-class Block:
+class Block(Root):
     def __init__(self, tag, size):
+        assert isinstance(tag, int)
         self._tag = tag
         self._fields = [None]*size
+        self._envoffsettop = None
 
     def field(self, i):
+        if i >= len(self._fields):
+            raise IndexError('field %d out of %d, top=%d/%s' % (i, len(self._fields), self._envoffsetdelta, self._envoffsettop))
+            return self._envoffsettop.field(i + self._envoffsetdelta).field(0)
         return self._fields[i]
 
     def set_field(self, i, v):
+        Root.check(v)
         self._fields[i] = v
 
     def __repr__(self):
@@ -427,20 +478,72 @@ def block_tag(block):
     return block._tag
 
 def is_true(a):
-    return bool(a)
+    return a != Int(0)
 
 def to_int(a):
-    assert isinstance(a, (int, long)), repr(a)
-    return a
+    assert isinstance(a, Int), repr(a)
+    return a.i
 
 def to_uint(a):
-    return a # TODO
+    assert isinstance(a, Int), repr(a)
+    return a.i # TODO
 
 def make_int(a):
-    return a
+    assert isinstance(a, (int, long)), a
+    return Int(a)
+
+class Float(Root):
+    def __init__(self, f):
+        self.f = f
+
+    def __repr__(self):
+        return 'Float(%s)' % self.f
+
+class Int(Root):
+    def __init__(self, i):
+        self.i = i
+
+    def __repr__(self):
+        return 'Int(%s)' % self.i
+
+    def __eq__(self, a):
+        if not isinstance(a, Int): return False
+        return self.i == a.i
+
+    def __cmp__(self, a):
+        raise Exception('not supported')
+
+    def __ne__(self, a):
+        if not isinstance(a, Int): return False
+        return self.i != a.i
+
+    def __lt__(self, a):
+        assert isinstance(a, Int)
+        return self.i < a.i
+
+    def __gt__(self, a):
+        assert isinstance(a, Int)
+        return self.i > a.i
+
+    def __le__(self, a):
+        assert isinstance(a, Int)
+        return self.i <= a.i
+
+    def __ge__(self, a):
+        assert isinstance(a, Int)
+        return self.i >= a.i
+
+def make_float(f):
+    assert isinstance(f, float), f
+    return Float(f)
+
+def to_float(f):
+    assert isinstance(f, Float), f
+    return f.f
 
 def is_int(a):
-    return isinstance(a, (int, long))
+    Root.check(a)
+    return isinstance(a, Int)
 
 def set_code_val(block, pc):
     block.set_field(0, make_int(pc & 0xFFFFFFFF))
@@ -470,6 +573,7 @@ def eval_bc(prims, global_data, bc, stack):
         raise Exception('unsupported instr %d = %s' % (instr, opcode_list[instr]))
 
     def push(v):
+        Root.check(v)
         stack.append(v)
 
     def sp(k):
@@ -707,7 +811,7 @@ def eval_bc(prims, global_data, bc, stack):
                 set_code_val(accu, pc - 3)
                 pc = to_pc(pop())
                 env = pop()
-                extra_args = make_int(pop())
+                extra_args = to_int(pop())
         elif instr == OP_CLOSURE:
             nvars = bc[pc]
             pc += 1
@@ -748,7 +852,7 @@ def eval_bc(prims, global_data, bc, stack):
                 b = make_block(1, Infix_tag)
                 b._envoffsettop = accu
                 b._envoffsetdelta = i * 2
-                b.set_field(0, to_int(pc + bc[pc + i]))
+                b.set_field(0, make_int(pc + bc[pc + i]))
                 push(b)
                 accu.set_field(i * 2, b)
                 accu.set_field(i * 2 - 1, 'closureoffsettaint')
@@ -856,7 +960,13 @@ def eval_bc(prims, global_data, bc, stack):
             b.set_field(2, pop())
             accu = b
         elif instr == OP_MAKEFLOATBLOCK:
-            1/0
+            n = bc[pc]
+            pc += 1
+            b = make_block(tag=0, size=pc)
+            b.set_field(0, accu)
+            for i in range(1, n):
+                b.set_field(i, pop())
+            accu = b
         elif instr == OP_GETFIELD0:
             accu = accu.field(0)
         elif instr == OP_GETFIELD1:
@@ -894,7 +1004,10 @@ def eval_bc(prims, global_data, bc, stack):
             pop()
             accu = Val_unit
         elif instr == OP_SETFLOATFIELD:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            accu.set_field(n, pop())
+            accu = Val_unit
         elif instr == OP_VECTLENGTH:
             accu = len(accu._fields)
         elif instr == OP_GETVECTITEM:
@@ -913,6 +1026,7 @@ def eval_bc(prims, global_data, bc, stack):
             else:
                 pc += 1
         elif instr == OP_BRANCHIFNOT:
+            dbg(lambda: (accu, is_true(accu)))
             if not is_true(accu):
                 pc += bc[pc]
             else:
@@ -939,8 +1053,8 @@ def eval_bc(prims, global_data, bc, stack):
 
             push(make_int(extra_args))
             push(env)
-            push(trap_sp)
-            push(pc - 1 + n)
+            push(make_int(trap_sp))
+            push(make_int(pc - 1 + n))
             trap_sp = len(stack)
         elif instr == OP_POPTRAP:
             trap_sp = sp(1)
@@ -948,18 +1062,18 @@ def eval_bc(prims, global_data, bc, stack):
             for _ in range(4): pop()
         elif instr == OP_RAISE:
             if trap_sp == -1:
-                raise Exception('terminated with exception')
+                raise Exception('terminated with exception %s' % accu)
 
             assert trap_sp <= len(stack), (trap_sp, len(stack))
             while len(stack) > trap_sp:
                 stack.pop()
 
-            pc = pop()
-            trap_sp = pop()
+            pc = to_int(pop())
+            trap_sp = to_int(pop())
             env = pop()
-            extra_args = pop()
+            extra_args = to_int(pop())
         elif instr == OP_CHECK_SIGNALS:
-            unsupp()
+            pass
         elif instr == OP_C_CALL1:
             dbg(lambda: ('stack', stack))
             n = bc[pc]
@@ -1039,25 +1153,25 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_XORINT:
             accu = make_int(to_int(accu) ^ to_int(pop()))
         elif instr == OP_LSLINT:
-            accu = make_int(to_int(accu) << pop())
+            accu = make_int(to_int(accu) << to_int(pop()))
         elif instr == OP_LSRINT:
-            accu = make_int(to_uint(accu) >> pop()) # TODO: logical shift
+            accu = make_int(to_uint(accu) >> to_int(pop())) # TODO: logical shift
         elif instr == OP_ASRINT:
-            accu = make_int(to_int(accu) >> pop()) # TODO: artmetic shift
+            accu = make_int(to_int(accu) >> to_int(pop())) # TODO: artmetic shift
         elif instr == OP_EQ:
             accu = make_int(pop() == accu)
         elif instr == OP_NEQ:
             accu = make_int(pop() != accu)
         elif instr == OP_LTINT:
-            accu = make_int(pop() < accu)
+            accu = make_int(accu < pop())
         elif instr == OP_LEINT:
-            accu = make_int(pop() <= accu)
+            accu = make_int(accu <= pop())
         elif instr == OP_GTINT:
-            accu = make_int(pop() > accu)
+            accu = make_int(accu > pop())
         elif instr == OP_GEINT:
-            accu = make_int(pop() >= accu)
+            accu = make_int(accu >= pop())
         elif instr == OP_OFFSETINT:
-            accu += bc[pc]
+            accu = make_int(to_int(accu) + bc[pc])
             pc += 1
         elif instr == OP_OFFSETREF:
             accu.set_field(0, make_int(to_int(accu.field(0)) + bc[pc]))
