@@ -1,6 +1,8 @@
 from __future__ import print_function
 import struct, sys, array, io, os
 import colorama
+from ocaml_values import *
+from ocaml_marshal import unmarshal
 
 trailer_magic = b'Caml1999X011'
 
@@ -11,6 +13,7 @@ def parse_executable(data):
     pos = len(data)
     pos -= len(trailer_magic)
     pos -= 4
+    assert pos >= 0
     num_sections, = struct.unpack('>I', data[pos:pos + 4])
 
     sections = []
@@ -30,12 +33,6 @@ def parse_executable(data):
 def trace_call(env, args):
     dbg(lambda: ('call', code_val(env), args))
 
-Closure_tag = 247
-Object_tag = 248
-Infix_tag = 249
-String_tag = 252
-Val_unit = 0
-
 opcode_list = [ 'OP_ACC0', 'OP_ACC1', 'OP_ACC2', 'OP_ACC3', 'OP_ACC4', 'OP_ACC5', 'OP_ACC6', 'OP_ACC7', 'OP_ACC', 'OP_PUSH', 'OP_PUSHACC0', 'OP_PUSHACC1', 'OP_PUSHACC2', 'OP_PUSHACC3', 'OP_PUSHACC4', 'OP_PUSHACC5', 'OP_PUSHACC6', 'OP_PUSHACC7', 'OP_PUSHACC', 'OP_POP', 'OP_ASSIGN', 'OP_ENVACC1', 'OP_ENVACC2', 'OP_ENVACC3', 'OP_ENVACC4', 'OP_ENVACC', 'OP_PUSHENVACC1', 'OP_PUSHENVACC2', 'OP_PUSHENVACC3', 'OP_PUSHENVACC4', 'OP_PUSHENVACC', 'OP_PUSH_RETADDR', 'OP_APPLY', 'OP_APPLY1', 'OP_APPLY2', 'OP_APPLY3', 'OP_APPTERM', 'OP_APPTERM1', 'OP_APPTERM2', 'OP_APPTERM3', 'OP_RETURN', 'OP_RESTART', 'OP_GRAB', 'OP_CLOSURE', 'OP_CLOSUREREC', 'OP_OFFSETCLOSUREM2', 'OP_OFFSETCLOSURE0', 'OP_OFFSETCLOSURE2', 'OP_OFFSETCLOSURE', 'OP_PUSHOFFSETCLOSUREM2', 'OP_PUSHOFFSETCLOSURE0', 'OP_PUSHOFFSETCLOSURE2', 'OP_PUSHOFFSETCLOSURE', 'OP_GETGLOBAL', 'OP_PUSHGETGLOBAL', 'OP_GETGLOBALFIELD', 'OP_PUSHGETGLOBALFIELD', 'OP_SETGLOBAL', 'OP_ATOM0', 'OP_ATOM', 'OP_PUSHATOM0', 'OP_PUSHATOM', 'OP_MAKEBLOCK', 'OP_MAKEBLOCK1', 'OP_MAKEBLOCK2', 'OP_MAKEBLOCK3', 'OP_MAKEFLOATBLOCK', 'OP_GETFIELD0', 'OP_GETFIELD1', 'OP_GETFIELD2', 'OP_GETFIELD3', 'OP_GETFIELD', 'OP_GETFLOATFIELD', 'OP_SETFIELD0', 'OP_SETFIELD1', 'OP_SETFIELD2', 'OP_SETFIELD3', 'OP_SETFIELD', 'OP_SETFLOATFIELD', 'OP_VECTLENGTH', 'OP_GETVECTITEM', 'OP_SETVECTITEM', 'OP_GETBYTESCHAR', 'OP_SETBYTESCHAR', 'OP_BRANCH', 'OP_BRANCHIF', 'OP_BRANCHIFNOT', 'OP_SWITCH', 'OP_BOOLNOT', 'OP_PUSHTRAP', 'OP_POPTRAP', 'OP_RAISE', 'OP_CHECK_SIGNALS', 'OP_C_CALL1', 'OP_C_CALL2', 'OP_C_CALL3', 'OP_C_CALL4', 'OP_C_CALL5', 'OP_C_CALLN', 'OP_CONST0', 'OP_CONST1', 'OP_CONST2', 'OP_CONST3', 'OP_CONSTINT', 'OP_PUSHCONST0', 'OP_PUSHCONST1', 'OP_PUSHCONST2', 'OP_PUSHCONST3', 'OP_PUSHCONSTINT', 'OP_NEGINT', 'OP_ADDINT', 'OP_SUBINT', 'OP_MULINT', 'OP_DIVINT', 'OP_MODINT', 'OP_ANDINT', 'OP_ORINT', 'OP_XORINT', 'OP_LSLINT', 'OP_LSRINT', 'OP_ASRINT', 'OP_EQ', 'OP_NEQ', 'OP_LTINT', 'OP_LEINT', 'OP_GTINT', 'OP_GEINT', 'OP_OFFSETINT', 'OP_OFFSETREF', 'OP_ISINT', 'OP_GETMETHOD', 'OP_BEQ', 'OP_BNEQ', 'OP_BLTINT', 'OP_BLEINT', 'OP_BGTINT', 'OP_BGEINT', 'OP_ULTINT', 'OP_UGEINT', 'OP_BULTINT', 'OP_BUGEINT', 'OP_GETPUBMET', 'OP_GETDYNMET', 'OP_STOP', 'OP_EVENT', 'OP_BREAK', 'OP_RERAISE', 'OP_RAISE_NOTRACE', 'OP_GETSTRINGCHAR' ]
 
 for _i, _opcode in enumerate(opcode_list):
@@ -47,193 +44,6 @@ if os.environ.get('DEBUG'):
 else:
     def dbg(f):
         pass
-
-def block_with_values(tag, arr):
-    b = Block(tag=tag, size=len(arr))
-    b._fields = list(arr)
-    return b
-
-def make_array(arr):
-    return block_with_values(tag=0, arr=arr)
-
-PREFIX_SMALL_BLOCK = 0x80
-PREFIX_SMALL_INT = 0x40
-PREFIX_SMALL_STRING = 0x20
-CODE_INT8 = 0x0
-CODE_INT16 = 0x1
-CODE_INT32 = 0x2
-CODE_INT64 = 0x3
-CODE_SHARED8 = 0x4
-CODE_SHARED16 = 0x5
-CODE_SHARED32 = 0x6
-CODE_SHARED64 = 0x14
-CODE_BLOCK32 = 0x8
-CODE_BLOCK64 = 0x13
-CODE_STRING8 = 0x9
-CODE_STRING32 = 0xA
-CODE_STRING64 = 0x15
-CODE_DOUBLE_BIG = 0xB
-CODE_DOUBLE_LITTLE = 0xC
-CODE_DOUBLE_ARRAY8_BIG = 0xD
-CODE_DOUBLE_ARRAY8_LITTLE = 0xE
-CODE_DOUBLE_ARRAY32_BIG = 0xF
-CODE_DOUBLE_ARRAY32_LITTLE = 0x7
-CODE_DOUBLE_ARRAY64_BIG = 0x16
-CODE_DOUBLE_ARRAY64_LITTLE = 0x17
-CODE_CODEPOINTER = 0x10
-CODE_INFIXPOINTER = 0x11
-CODE_CUSTOM = 0x12
-CODE_CUSTOM_LEN = 0x18
-CODE_CUSTOM_FIXED = 0x19
-
-
-class Unmarshaler:
-    def __init__(self):
-        self.intern_table = []
-        self._lvl = 0
-
-    def intern(self, o):
-        self.intern_table.append(o)
-        return o
-
-    def _block(self, data, tag, size):
-        if size == 0:
-            v = ATOMS[tag]
-        else:
-            v = self.intern(block_with_values(tag, [
-                self.unmarshal(data)
-                for _ in range(size)
-            ]))
-
-            if tag == Object_tag:
-                # TODO: refresh obj id
-                #return '_objects_not_supported'
-                return v
-
-            return v
-
-    def get_shared(self, id):
-        assert id > 0, id
-        assert id <= len(self.intern_table), (id, len(self.intern_table))
-        return self.intern_table[len(self.intern_table)-id]
-
-    def unmarshal(self, data):
-        lvl = self._lvl
-        self._lvl += 1
-
-        code, = struct.unpack('B', data.read(1))
-
-        def _wosize_hd(hd): return hd >> 10
-        def _tag_hd(hd): return hd & 0xFF
-
-        if code >= PREFIX_SMALL_INT:
-            if code >= PREFIX_SMALL_BLOCK:
-                tag = code & 0xF
-                size = (code >> 4) & 0x7
-                return self._block(data, tag, size)
-            else:
-                return make_int(code & 0x3F)
-        else:
-            if code >= PREFIX_SMALL_STRING:
-                length = code & 0x1F
-                return self.intern(make_string(data.read(length)))
-            else:
-                if code == CODE_INT8:
-                    i, = struct.unpack('>b', data.read(1))
-                    return make_int(i)
-                if code == CODE_INT16:
-                    i, = struct.unpack('>h', data.read(2))
-                    return make_int(i)
-                if code == CODE_INT32:
-                    i, = struct.unpack('>i', data.read(4))
-                    return make_int(i)
-                if code == CODE_INT64:
-                    i, = struct.unpack('>q', data.read(8))
-                    return make_int(i)
-                if code == CODE_BLOCK32:
-                    hd, = struct.unpack('>I', data.read(4))
-                    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
-                if code == CODE_BLOCK64:
-                    hd, = struct.unpack('>Q', data.read(8))
-                    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
-                if code == CODE_STRING8:
-                    len, = struct.unpack('B', data.read(1))
-                    return self.intern(make_string(data.read(len)))
-                if code == CODE_STRING32:
-                    len, = struct.unpack('>I', data.read(4))
-                    return self.intern(make_string(data.read(len)))
-                if code == CODE_SHARED8:
-                    id, = struct.unpack('B', data.read(1))
-                    return self.get_shared(id)
-                if code == CODE_SHARED16:
-                    id, = struct.unpack('>H', data.read(2))
-                    return self.get_shared(id)
-                if code == CODE_SHARED32:
-                    id, = struct.unpack('>I', data.read(4))
-                    return self.get_shared(id)
-                if code == CODE_CUSTOM:
-                    id = data.read(3)
-                    if id == '_j\0':
-                        n, = struct.unpack('<q', data.read(8))
-                        return Int64(n)
-                    elif id == '_n\0': # nativeint
-                        t, = struct.unpack('B', data.read(1))
-                        if t == 2:
-                            n, = struct.unpack('>q', data.read(8))
-                        elif t == 1:
-                            n, = struct.unpack('>i', data.read(4))
-                        else:
-                            raise Exception('bad tag')
-                        # print('nativeint', id, n, t)
-                        return Int64(n)
-                    elif id == '_i\0':
-                        n, = struct.unpack('<i', data.read(4))
-                        return Int32(n)
-                    else:
-                        raise Exception('unknown custom %r' % id)
-                if code == CODE_DOUBLE_LITTLE:
-                    f = make_float(struct.unpack('<d', data.read(8))[0])
-                    return self.intern(f)
-                if code == CODE_DOUBLE_ARRAY32_LITTLE:
-                    len, = struct.unpack('>I', data.read(32))
-                    return self.intern([
-                        make_float(struct.unpack('<d', data.read(8))[0])
-                        for i in range(len)
-                    ])
-                if code == CODE_DOUBLE_ARRAY8_LITTLE:
-                    len, = struct.unpack('>B', data.read(1))
-                    return self.intern([
-                        make_float(struct.unpack('<d', data.read(8))[0])
-                        for i in range(len)
-                    ])
-
-                raise Exception('code 0x%x' % code)
-
-def make_string(data):
-    assert type(data) == str
-    return data
-
-def to_str(data):
-    assert type(data) == str
-    return data
-
-def unmarshal(data):
-    header = data.read(20)
-    magic, = struct.unpack('>I', header[:4])
-    if magic == 0x8495A6BF:
-        header += data.read(12)
-
-        _, data_len, num_objects, whsize = struct.unpack('>ILLL', header[4:])
-    elif magic == 0x8495A6BE:
-        data_len, num_objects, _, whsize = struct.unpack('>IIII', header[4:])
-    else:
-        raise Exception('bad magic')
-
-    v = Unmarshaler().unmarshal(data)
-    leftover = data.read()
-    #for vv in v._fields: print('-', repr(vv))
-    assert not leftover, repr(leftover)
-    return v
 
 class Prims:
     def __init__(self, names):
@@ -420,130 +230,6 @@ class Prims:
 
     def caml_gc_full_major(self, _):
         pass
-
-class Root:
-    @staticmethod
-    def check(x):
-        assert isinstance(x, (Root, str, bytearray)), x
-
-class Int64(Root):
-    def __init__(self, i):
-        self.i = i
-
-    def __repr__(self):
-        return 'Int64(%s)' % self.i
-
-class Int32(Root):
-    def __init__(self, i):
-        self.i = i
-
-    def __repr__(self):
-        return 'Int32(%s)' % self.i
-
-class Block(Root):
-    def __init__(self, tag, size):
-        assert isinstance(tag, int)
-        self._tag = tag
-        self._fields = [None]*size
-        self._envoffsettop = None
-
-    def field(self, i):
-        if i >= len(self._fields):
-            raise IndexError('field %d out of %d, top=%d/%s' % (i, len(self._fields), self._envoffsetdelta, self._envoffsettop))
-            return self._envoffsettop.field(i + self._envoffsetdelta).field(0)
-        return self._fields[i]
-
-    def set_field(self, i, v):
-        Root.check(v)
-        self._fields[i] = v
-
-    def __repr__(self):
-        #return 'Block(%d, s=%d)' % (self._tag, len(self._fields))
-        #return 'Block#%x(%d, %s)' % (id(self), self._tag, self._fields)
-        return 'Block(%d, %s)' % (self._tag, self._fields)
-
-    def __hash__(self):
-        return hash((self._tag, self._fields))
-
-def is_block(x):
-    return isinstance(x, Block)
-
-ATOMS = [ Block(tag=i, size=0) for i in range(256) ]
-
-def make_block(size, tag):
-    b = Block(tag, size)
-    return b
-
-def block_tag(block):
-    return block._tag
-
-def is_true(a):
-    return a != Int(0)
-
-def to_int(a):
-    assert isinstance(a, Int), repr(a)
-    return a.i
-
-def to_uint(a):
-    assert isinstance(a, Int), repr(a)
-    return a.i # TODO
-
-def make_int(a):
-    assert isinstance(a, (int, long)), a
-    return Int(a)
-
-class Float(Root):
-    def __init__(self, f):
-        self.f = f
-
-    def __repr__(self):
-        return 'Float(%s)' % self.f
-
-class Int(Root):
-    def __init__(self, i):
-        self.i = i
-
-    def __repr__(self):
-        return 'Int(%s)' % self.i
-
-    def __eq__(self, a):
-        if not isinstance(a, Int): return False
-        return self.i == a.i
-
-    def __cmp__(self, a):
-        raise Exception('not supported')
-
-    def __ne__(self, a):
-        if not isinstance(a, Int): return False
-        return self.i != a.i
-
-    def __lt__(self, a):
-        assert isinstance(a, Int)
-        return self.i < a.i
-
-    def __gt__(self, a):
-        assert isinstance(a, Int)
-        return self.i > a.i
-
-    def __le__(self, a):
-        assert isinstance(a, Int)
-        return self.i <= a.i
-
-    def __ge__(self, a):
-        assert isinstance(a, Int)
-        return self.i >= a.i
-
-def make_float(f):
-    assert isinstance(f, float), f
-    return Float(f)
-
-def to_float(f):
-    assert isinstance(f, Float), f
-    return f.f
-
-def is_int(a):
-    Root.check(a)
-    return isinstance(a, Int)
 
 def set_code_val(block, pc):
     block.set_field(0, make_int(pc & 0xFFFFFFFF))
@@ -1250,13 +936,17 @@ def eval_bc(prims, global_data, bc, stack):
         else:
             raise Exception('invalid opcode %d' % instr)
 
-if __name__ == '__main__':
-    exe_dict = parse_executable(open(sys.argv[1], 'rb').read())
+def entry_point(argv):
+    exe_dict = parse_executable(open(argv[1], 'rb').read())
     bytecode = array.array('i', exe_dict['CODE'])
     prims = Prims(exe_dict['PRIM'].decode().split('\0'))
     global_data = unmarshal(io.BytesIO(exe_dict['DATA']))._fields
-    # print(global_data)
-    if 1:
-        # print( { k:len(v) for k,v in exe_dict.items() })
-        stack = []
-        eval_bc(prims=prims, global_data=global_data, bc=bytecode, stack=stack)
+
+    stack = []
+    eval_bc(prims=prims, global_data=global_data, bc=bytecode, stack=stack)
+
+def target(*args):
+    return entry_point, None
+
+if __name__ == '__main__':
+    entry_point(sys.argv)
