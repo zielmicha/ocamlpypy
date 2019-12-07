@@ -38,4 +38,4 @@ for test in sys.argv[1:]:
     else:
         ok += 1
 
-print('ok', ok, 'fail', fail)
+print 'ok', ok, 'fail', fail
