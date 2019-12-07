@@ -1,4 +1,4 @@
-from __future__ import print_function
+#from __future__ import print_function
 import struct, sys, array, StringIO, os
 import colorama
 from ocaml_values import *
@@ -15,18 +15,28 @@ for _i, _opcode in enumerate(opcode_list):
 
 if os.environ.get('DEBUG'):
     def dbg(*f):
-        print(*f)
+        print(' '.join(map(str, f)))
 else:
     dbg = None
 
 class Prims:
-    def __init__(self, names):
+    def __init__(self, names, argv):
         self.names = names
+        self.argv = argv
 
-    def call(self, index, *args):
-        name = self.names[index]
-        if dbg: dbg('ccall', name, args)
-        return getattr(self, name)(*args)
+    for i in range(1, 6):
+        exec '''
+def call%d(self, index, *args):
+    # TODO: avoid dict lookup
+    name = self.names[index]
+    if dbg:
+        dbg('ccall', name, args)
+    if self.funcs%d:
+       res = self.funcs%d[name](self, *args)
+    else:
+       raise Exception("no functions of this arity")
+    Root.check(res)
+    return res''' % (i, i, i)
 
     def caml_register_named_value(self, vname, val):
         # print('named:', vname, val)
@@ -49,22 +59,24 @@ class Prims:
 
     def caml_ml_output_char(self, channel, ch):
         # print('out', channel, chr(ch))
-        sys.stdout.write(chr(to_int(ch)))
+        # TODO: buffering
+        os.write(1, chr(to_int(ch)))
         return make_int(0)
 
     def caml_ml_flush(self, channel):
-        sys.stdout.flush()
+        return make_int(0)
 
     def caml_create_bytes(self, length):
-        return make_bytes(bytearray(to_int(length)))
+        # return make_bytes(bytearray(to_int(length)))
+        return make_string('\0' * to_int(length))
 
     def caml_sys_get_argv(self, _):
         return make_array([make_string("ocamlpypy"), make_array([make_string('ocamlpypy')] + [
-            make_string(arg) for arg in sys.argv[2:]
+            make_string(arg) for arg in self.argv
         ])])
 
     def caml_sys_getenv(self, name):
-        return make_string(os.environ.get(to_str(name), ''))
+        return make_string(os.environ.get(to_str(name)) or '')
 
     def caml_sys_get_config(self, _):
         return make_array([
@@ -100,12 +112,22 @@ class Prims:
     def caml_ml_string_length(self, s):
         return make_int(len(to_str(s)))
 
-    def caml_ml_output(self, stream, data, ofs, length):
-        data = to_str(data)[to_int(ofs) : to_int(ofs) + to_int(length)]
-        sys.stdout.write(data)
+    def caml_ml_output(self, stream, data, ofs_, length_):
+        ofs = to_int(ofs_)
+        len = to_int(length_)
+        assert ofs >= 0
+        assert len >= 0
+        data = to_str(data)[ofs : ofs + len]
+        os.write(1, data)
+        return make_int(0)
 
-    def caml_format_int(self, fmt, n):
-        return make_string(to_str(fmt) % (to_int(n)))
+    def caml_format_int(self, fmt, n_):
+        fmt_s = to_str(fmt)
+        n = to_int(n_)
+        if fmt_s == '%d':
+            return make_string('%d' % n)
+        else:
+            raise Exception('unknown format %s' % fmt_s)
 
     def caml_nativeint_shift_left(self, a, b):
         assert isinstance(a, Int64), a
@@ -122,11 +144,11 @@ class Prims:
         return Int64(a.i - b.i)
 
     def caml_make_vect(self, size, init):
-        return make_array([ init for i in range(size) ])
+        return make_array([ init for i in range(to_int(size)) ])
 
     def caml_obj_block(self, tag, size):
-        b = make_block(tag, size)
-        for i in range(size): b.set_field(i, make_int(0))
+        b = make_block(to_int(tag), to_int(size))
+        for i in range(to_int(size)): b.set_field(i, make_int(0))
         return b
 
     def caml_obj_dup(self, o):
@@ -135,23 +157,33 @@ class Prims:
         return b
 
     def caml_ensure_stack_capacity(self, space):
-        pass
+        return Val_unit
 
-    def caml_fill_bytes(self, s, offset, len, init):
-        #print(offset, len, init)
-        for i in range(offset, offset + len):
-            s[i] = init
+    def caml_fill_bytes(self, s, offset_, len_, init_):
+        #offset = to_int(offset_)
+        #len = to_int(offset_)
+        #init = to_int(init_)
+        #assert offset >= 0
+        #assert len >= 0
+        #assert isinstance(s, Bytes)
+        #for i in range(offset, offset + len):
+        #    s.s[i] = init
+        #return Val_unit
+        raise Exception('unsupp')
 
-    def caml_string_notequal(self, a, b):
-        assert type(a) == type(b)
-        return a != b
+    def caml_string_equal(self, a, b):
+        if isinstance(a, String):
+            assert isinstance(b, String)
+        else:
+            assert isinstance(a, Bytes)
+            assert isinstance(b, Bytes)
+        return make_bool(a == b)
 
     def caml_int_of_string(self, n):
         return make_int(int(to_str(n)))
 
     def caml_string_equal(self, a, b):
-        assert type(a) == type(b)
-        return a == b
+        return not self.caml_string_equal(a, b)
 
     def caml_neg_float(self, a):
         return make_float(-to_float(a))
@@ -163,46 +195,62 @@ class Prims:
         return make_float(to_float(a) * to_float(b))
 
     def caml_int_of_float(self, n):
-        return make_int(int(n))
+        return make_int(int(to_float(n)))
 
     def caml_float_of_int(self, n):
-        return float(to_int(n))
+        return make_float(float(to_int(n)))
 
-    def caml_array_sub(self, a, ofs, len):
+    def caml_array_sub(self, a, ofs_, len_):
+        ofs = to_int(ofs_)
+        len = to_int(len_)
+        assert ofs >= 0
+        assert len >= 0
         return make_array(a._fields[ofs : ofs+len])
 
     def caml_make_array(self, init):
         return init
 
     def caml_hash(self, count, limit, seed, obj):
-        return make_int(hash(obj)) # TODO
+        return make_int(obj.hash()) # TODO
 
     def caml_array_get_addr(self, array, index):
-        return array.field(index)
+        return array.field(to_int(index))
 
     def caml_array_set_addr(self, array, index, val):
-        array.set_field(index, val)
+        array.set_field(to_int(index), val)
 
     def caml_array_get(self, array, index):
-        return array.field(index)
+        return array.field(to_int(index))
 
     def caml_array_set(self, array, index, val):
-        array.set_field(index, val)
+        array.set_field(to_int(index), val)
 
     def caml_weak_create(self, len):
-        return '__weak' # TODO
+        return make_string('__weak') # TODO
 
     def caml_greaterequal(self, a, b):
-        return a >= b # TODO
+        #return make_bool(a >= b) # TODO
+        raise Exception('unsupp')
 
     def caml_equal(self, a, b):
-        return a == b # TODO
+        #return make_bool(a == b) # TODO
+        raise Exception('unsupp')
 
     def caml_eq_float(self, a, b):
-        return to_float(a) == to_float(b)
+        return make_bool(to_float(a) == to_float(b))
 
     def caml_gc_full_major(self, _):
-        pass
+        return Val_unit
+
+    funcs1 = {}
+    funcs2 = {}
+    funcs3 = {}
+    funcs4 = {}
+    funcs5 = {}
+    for _k, _v in locals().items():
+        if _k.startswith('caml_'):
+            _cnt = _v.func_code.co_argcount-1
+            locals()['funcs%d' % _cnt][_k] = _v
 
 def set_code_val(block, pc):
     block.set_field(0, make_int(pc & 0xFFFFFFFF))
@@ -233,8 +281,11 @@ class Stack:
     def pop(self):
         return self._arr.pop()
 
-    def sp_set(self, target, src):
+    def sp_swap(self, target, src):
         self._arr[len(self._arr) - 1 - target] = self.sp(src)
+
+    def sp_set(self, k, val):
+        self._arr[len(self._arr) - 1 - k] = val
 
     def sp(self, k):
         return self._arr[len(self._arr) - 1 - k]
@@ -242,11 +293,8 @@ class Stack:
     def len(self):
         return len(self._arr)
 
-    def __repr__(self):
-        return repr(self._arr)
-
 def eval_bc(prims, global_data, bc):
-    accu = 0
+    accu = make_int(0)
     extra_args = 0
     env = make_string('rootenv')
     pc = 0
@@ -259,9 +307,9 @@ def eval_bc(prims, global_data, bc):
 
     push = stack.push
     pop = stack.pop
-    c_call = prims.call
     sp = stack.sp
-    set_sp = stack.sp_set
+    swap_sp = stack.sp_swap
+    sp_set = stack.sp_set
 
     def _set_code_val(b, pc):
         #assert pc >= 0 and pc < len(bc)
@@ -269,8 +317,12 @@ def eval_bc(prims, global_data, bc):
 
     while True:
         instr = bc[pc]
-        if dbg: dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', '(' + repr(stack)[-100:] + ')', '__env', repr(env)[:100])
+        #if dbg: dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000])
+        #print 'pc', pc, 'instr', opcode_list[instr], 'accu', accu
         pc += 1
+
+        assert isinstance(trap_sp, int)
+        Root.check(accu)
 
         if instr == OP_ACC0:
             accu = sp(0)
@@ -356,9 +408,9 @@ def eval_bc(prims, global_data, bc):
             accu = env.field(bc[pc])
             pc += 1
         elif instr == OP_PUSH_RETADDR:
-            push(extra_args)
+            push(make_int(extra_args))
             push(env)
-            push(pc + bc[pc])
+            push(make_int(pc + bc[pc]))
             pc += 1
         elif instr == OP_APPLY:
             extra_args = bc[pc]-1
@@ -412,7 +464,7 @@ def eval_bc(prims, global_data, bc):
 
             i = nargs - 1
             while i >= 0:
-                set_sp(newsp + i, i)
+                swap_sp(newsp + i, i)
                 i -= 1
             for _ in range(newsp): pop()
             trace_call(accu, None)
@@ -648,7 +700,7 @@ def eval_bc(prims, global_data, bc):
             pc += 1
             accu = accu.field(n)
         elif instr == OP_GETFLOATFIELD:
-            1/0
+            unsupp()
         elif instr == OP_SETFIELD0:
             accu.set_field(0, sp(0))
             pop()
@@ -677,7 +729,7 @@ def eval_bc(prims, global_data, bc):
             accu.set_field(n, pop())
             accu = Val_unit
         elif instr == OP_VECTLENGTH:
-            accu = len(accu._fields)
+            accu = make_int(len(accu._fields))
         elif instr == OP_GETVECTITEM:
             unsupp()
         elif instr == OP_SETVECTITEM:
@@ -721,7 +773,7 @@ def eval_bc(prims, global_data, bc):
             push(make_int(pc - 1 + n))
             trap_sp = stack.len()
         elif instr == OP_POPTRAP:
-            trap_sp = sp(1)
+            trap_sp = to_int(sp(1))
             assert trap_sp <= stack.len()
             for _ in range(4): pop()
         elif instr == OP_RAISE:
@@ -741,29 +793,29 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_C_CALL1:
             n = bc[pc]
             pc += 1
-            accu = c_call(n, accu)
+            accu = prims.call1(n, accu)
         elif instr == OP_C_CALL2:
             n = bc[pc]
             pc += 1
-            accu = c_call(n, accu, sp(0))
+            accu = prims.call2(n, accu, sp(0))
             pop()
         elif instr == OP_C_CALL3:
             n = bc[pc]
             pc += 1
-            accu = c_call(n, accu, sp(0), sp(1))
+            accu = prims.call3(n, accu, sp(0), sp(1))
             pop()
             pop()
         elif instr == OP_C_CALL4:
             n = bc[pc]
             pc += 1
-            accu = c_call(n, accu, sp(0), sp(1), sp(2))
+            accu = prims.call4(n, accu, sp(0), sp(1), sp(2))
             pop()
             pop()
             pop()
         elif instr == OP_C_CALL5:
             n = bc[pc]
             pc += 1
-            accu = c_call(n, accu, sp(0), sp(1), sp(2), sp(3))
+            accu = prims.call5(n, accu, sp(0), sp(1), sp(2), sp(3))
             pop()
             pop()
             pop()
@@ -820,19 +872,19 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_LSRINT:
             accu = make_int(to_uint(accu) >> to_int(pop())) # TODO: logical shift
         elif instr == OP_ASRINT:
-            accu = make_int(to_int(accu) >> to_int(pop())) # TODO: artmetic shift
+            accu = make_int(to_int(accu) >> to_int(pop())) # TODO: arthmetic shift
         elif instr == OP_EQ:
-            accu = make_int(pop() == accu)
+            accu = make_int(eq(pop(), accu))
         elif instr == OP_NEQ:
-            accu = make_int(pop() != accu)
+            accu = make_int(not eq(pop(), accu))
         elif instr == OP_LTINT:
-            accu = make_int(accu < pop())
+            accu = make_bool(to_int(accu) < to_int(pop()))
         elif instr == OP_LEINT:
-            accu = make_int(accu <= pop())
+            accu = make_bool(to_int(accu) <= to_int(pop()))
         elif instr == OP_GTINT:
-            accu = make_int(accu > pop())
+            accu = make_bool(to_int(accu) > to_int(pop()))
         elif instr == OP_GEINT:
-            accu = make_int(accu >= pop())
+            accu = make_int(to_int(accu) >= to_int(pop()))
         elif instr == OP_OFFSETINT:
             accu = make_int(to_int(accu) + bc[pc])
             pc += 1
@@ -929,10 +981,11 @@ else:
 def entry_point(argv):
     exe_dict = parse_executable(open(argv[1], 'rb').read())
     bytecode = make_int_array(exe_dict['CODE'])
-    prims = Prims(exe_dict['PRIM'].split('\0'))
+    prims = Prims(exe_dict['PRIM'].split('\0'), argv)
     global_data = unmarshal(exe_dict['DATA'])._fields
 
     eval_bc(prims=prims, global_data=global_data, bc=bytecode)
+    return 0
 
 def target(*args):
     return entry_point, None

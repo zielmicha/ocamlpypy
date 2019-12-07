@@ -35,7 +35,7 @@ trailer_magic = b'Caml1999X011'
 
 def parse_executable(data):
     if not data.endswith(trailer_magic):
-        raise Exception('invalid magic %r' % data[max(0, len(data)-len(trailer_magic)):])
+        raise Exception('invalid magic %s' % data[max(0, len(data)-len(trailer_magic)):])
 
     pos = len(data)
     pos -= len(trailer_magic)
@@ -94,7 +94,7 @@ def unmarshal(data_str):
     v = Unmarshaler().unmarshal(data)
     leftover = data.read()
     #for vv in v._fields: print('-', repr(vv))
-    assert not leftover, repr(leftover)
+    assert not leftover
     return v
 
 class Unmarshaler:
@@ -201,7 +201,7 @@ class Unmarshaler:
                         n, = struct.unpack('<i', data.read(4))
                         return Int32(n)
                     else:
-                        raise Exception('unknown custom %r' % id)
+                        raise Exception('unknown custom %s' % id)
                 if code == CODE_DOUBLE_LITTLE:
                     f = make_float(struct.unpack('<d', data.read(8))[0])
                     return self.intern(f)
