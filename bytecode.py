@@ -270,187 +270,208 @@ def offset_field(v, n):
 
 from rpython.rlib.objectmodel import always_inline
 
-class Stack:
-    def __init__(self):
-        self._arr = []
+from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe
+
+def get_printable_location(pc, bc):
+    return '%d(%s)' % (pc, opcode_list[bc[pc]])
+
+jitdriver = JitDriver(
+    greens=['pc', 'bc'],
+    reds=['frame'],
+    virtualizables = ['frame'],
+    get_printable_location=get_printable_location)
+
+class Intereter:
+    _virtualizable_ = ['extra_args', 'accu', 'trap_sp', 'env', '_stack']
+
+    def __init__(self, prims, global_data):
+        self.prims = prims
+        self.global_data = global_data
+        self.env = make_string('rootenv')
+        self.extra_args = 0
+        self.accu = make_int(0)
+        self.trap_sp = -1
+
+        self._stack = [Val_unit] * 2048
+        self._stack_top = 0
+
+    def eval(self, bc):
+        pc = 0
+
+        while True:
+            jitdriver.jit_merge_point(
+                frame=self, bc=bc, pc=pc)
+
+            self._stack_top = hint(self._stack_top, promote=True)
+
+            pc = handle_opcode(self, bc, pc)
+            if pc == -1: break
+
+            Root.check(self.accu)
 
     def push(self, v):
         Root.check(v)
-        self._arr.append(v)
+        self._stack[self._stack_top] = v
+        self._stack_top += 1
 
     def pop(self):
-        return self._arr.pop()
+        self._stack_top -= 1
+        r = self._stack[self._stack_top]
+        self._stack[self._stack_top] = Val_unit
+        return r
 
     def sp_swap(self, target, src):
-        self._arr[len(self._arr) - 1 - target] = self.sp(src)
+        self._stack[self._stack_top - 1 - target] = self.sp(src)
 
     def sp_set(self, k, val):
-        self._arr[len(self._arr) - 1 - k] = val
+        self._stack[self._stack_top - 1 - k] = val
 
     def sp(self, k):
-        return self._arr[len(self._arr) - 1 - k]
+        return self._stack[self._stack_top - 1 - k]
 
     def len(self):
-        return len(self._arr)
+        return self._stack_top
 
-from rpython.rlib.jit import JitDriver
-jitdriver = JitDriver(
-    greens=['pc', 'trap_sp', 'extra_args', 'bc'],
-    reds=['stack', 'accu', 'env', 'global_data', 'prims'])
-
-def eval_bc(prims, global_data, bc):
-    accu = make_int(0)
-    extra_args = 0
-    env = make_string('rootenv')
-    pc = 0
-    trap_sp = -1
-
-    def unsupp():
-        raise Exception('unsupported instr')# %d = %s' % (instr, opcode_list[instr]))
-
-    stack = Stack()
-
-    while True:
-        jitdriver.jit_merge_point(
-            pc=pc, bc=bc, trap_sp=trap_sp, extra_args=extra_args, prims=prims,
-            stack=stack, accu=accu, env=env, global_data=global_data)
+#@always_inline
+@look_inside
+@unroll_safe
+def handle_opcode(self, bc, pc):
         instr = bc[pc]
-        #if dbg: dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000])
-        #print 'pc', pc, 'instr', opcode_list[instr], 'accu', accu
+        accu = self.accu
         pc += 1
 
-        assert isinstance(trap_sp, int)
-        Root.check(accu)
+        def unsupp():
+            raise Exception('unsupported instr')
 
         if instr == OP_ACC0:
-            accu = stack.sp(0)
+            accu = self.sp(0)
         elif instr == OP_ACC1:
-            accu = stack.sp(1)
+            accu = self.sp(1)
         elif instr == OP_ACC2:
-            accu = stack.sp(2)
+            accu = self.sp(2)
         elif instr == OP_ACC3:
-            accu = stack.sp(3)
+            accu = self.sp(3)
         elif instr == OP_ACC4:
-            accu = stack.sp(4)
+            accu = self.sp(4)
         elif instr == OP_ACC5:
-            accu = stack.sp(5)
+            accu = self.sp(5)
         elif instr == OP_ACC6:
-            accu = stack.sp(6)
+            accu = self.sp(6)
         elif instr == OP_ACC7:
-            accu = stack.sp(7)
+            accu = self.sp(7)
         elif instr == OP_ACC:
-            accu = stack.sp(bc[pc])
+            accu = self.sp(bc[pc])
             pc += 1
         elif instr == OP_PUSH:
-            stack.push(accu)
+            self.push(accu)
         elif instr == OP_PUSHACC0:
-            stack.push(accu)
+            self.push(accu)
         elif instr == OP_PUSHACC1:
-            stack.push(accu)
-            accu = stack.sp(1)
+            self.push(accu)
+            accu = self.sp(1)
         elif instr == OP_PUSHACC2:
-            stack.push(accu)
-            accu = stack.sp(2)
+            self.push(accu)
+            accu = self.sp(2)
         elif instr == OP_PUSHACC3:
-            stack.push(accu)
-            accu = stack.sp(3)
+            self.push(accu)
+            accu = self.sp(3)
         elif instr == OP_PUSHACC4:
-            stack.push(accu)
-            accu = stack.sp(4)
+            self.push(accu)
+            accu = self.sp(4)
         elif instr == OP_PUSHACC5:
-            stack.push(accu)
-            accu = stack.sp(5)
+            self.push(accu)
+            accu = self.sp(5)
         elif instr == OP_PUSHACC6:
-            stack.push(accu)
-            accu = stack.sp(6)
+            self.push(accu)
+            accu = self.sp(6)
         elif instr == OP_PUSHACC7:
-            stack.push(accu)
-            accu = stack.sp(7)
+            self.push(accu)
+            accu = self.sp(7)
         elif instr == OP_PUSHACC:
-            stack.push(accu)
-            accu = stack.sp(bc[pc])
+            self.push(accu)
+            accu = self.sp(bc[pc])
             pc += 1
         elif instr == OP_POP:
             for i in range(bc[pc]):
-                stack.pop()
+                self.pop()
             pc += 1
         elif instr == OP_ASSIGN:
-            stack.sp_set(bc[pc], accu)
+            self.sp_set(bc[pc], accu)
             pc += 1
             accu = Val_unit
         elif instr == OP_ENVACC1:
-            accu = env.field(1)
+            accu = self.env.field(1)
         elif instr == OP_ENVACC2:
-            accu = env.field(2)
+            accu = self.env.field(2)
         elif instr == OP_ENVACC3:
-            accu = env.field(3)
+            accu = self.env.field(3)
         elif instr == OP_ENVACC4:
-            accu = env.field(4)
+            accu = self.env.field(4)
         elif instr == OP_ENVACC:
-            accu = env.field(bc[pc])
+            accu = self.env.field(bc[pc])
             pc += 1
         elif instr == OP_PUSHENVACC1:
-            stack.push(accu)
-            accu = env.field(1)
+            self.push(accu)
+            accu = self.env.field(1)
         elif instr == OP_PUSHENVACC2:
-            stack.push(accu)
-            accu = env.field(2)
+            self.push(accu)
+            accu = self.env.field(2)
         elif instr == OP_PUSHENVACC3:
-            stack.push(accu)
-            accu = env.field(3)
+            self.push(accu)
+            accu = self.env.field(3)
         elif instr == OP_PUSHENVACC4:
-            stack.push(accu)
-            accu = env.field(4)
+            self.push(accu)
+            accu = self.env.field(4)
         elif instr == OP_PUSHENVACC:
-            stack.push(accu)
-            accu = env.field(bc[pc])
+            self.push(accu)
+            accu = self.env.field(bc[pc])
             pc += 1
         elif instr == OP_PUSH_RETADDR:
-            stack.push(make_int(extra_args))
-            stack.push(env)
-            stack.push(make_int(pc + bc[pc]))
+            self.push(make_int(self.extra_args))
+            self.push(self.env)
+            self.push(make_int(pc + bc[pc]))
             pc += 1
         elif instr == OP_APPLY:
-            extra_args = bc[pc]-1
+            self.extra_args = bc[pc]-1
             trace_call(accu, None)
             pc = code_val(accu)
-            env = accu
+            self.env = accu
         elif instr == OP_APPLY1:
-            arg1 = stack.pop()
-            stack.push(make_int(extra_args))
-            stack.push(env)
-            stack.push(make_int(pc))
-            stack.push(arg1)
+            arg1 = self.pop()
+            self.push(make_int(self.extra_args))
+            self.push(self.env)
+            self.push(make_int(pc))
+            self.push(arg1)
             trace_call(accu, [arg1])
             pc = code_val(accu)
-            env = accu
-            extra_args = 0
+            self.env = accu
+            self.extra_args = 0
         elif instr == OP_APPLY2:
-            arg1 = stack.pop()
-            arg2 = stack.pop()
+            arg1 = self.pop()
+            arg2 = self.pop()
             trace_call(accu, [arg1, arg2])
-            stack.push(make_int(extra_args))
-            stack.push(env)
-            stack.push(make_int(pc))
-            stack.push(arg2)
-            stack.push(arg1)
+            self.push(make_int(self.extra_args))
+            self.push(self.env)
+            self.push(make_int(pc))
+            self.push(arg2)
+            self.push(arg1)
             pc = code_val(accu)
-            env = accu
-            extra_args = 1
+            self.env = accu
+            self.extra_args = 1
         elif instr == OP_APPLY3:
-            arg1 = stack.pop()
-            arg2 = stack.pop()
-            arg3 = stack.pop()
+            arg1 = self.pop()
+            arg2 = self.pop()
+            arg3 = self.pop()
             trace_call(accu, [arg1, arg2, arg3])
-            stack.push(make_int(extra_args))
-            stack.push(env)
-            stack.push(make_int(pc))
-            stack.push(arg3)
-            stack.push(arg2)
-            stack.push(arg1)
+            self.push(make_int(self.extra_args))
+            self.push(self.env)
+            self.push(make_int(pc))
+            self.push(arg3)
+            self.push(arg2)
+            self.push(arg1)
             pc = code_val(accu)
-            env = accu
-            extra_args = 2
+            self.env = accu
+            self.extra_args = 2
         elif instr == OP_APPTERM:
             nargs = bc[pc]
             pc += 1
@@ -458,93 +479,93 @@ def eval_bc(prims, global_data, bc):
             newsp = slotsize - nargs
 
             if dbg:
-                for i in range(nargs): dbg('arg', stack.sp(i))
+                for i in range(nargs): dbg('arg', self.sp(i))
 
             i = nargs - 1
             while i >= 0:
-                stack.sp_swap(newsp + i, i)
+                self.sp_swap(newsp + i, i)
                 i -= 1
-            for _ in range(newsp): stack.pop()
+            for _ in range(newsp): self.pop()
             trace_call(accu, None)
             pc = code_val(accu)
-            env = accu
-            extra_args += nargs - 1
+            self.env = accu
+            self.extra_args += nargs - 1
         elif instr == OP_APPTERM1:
-            arg1 = stack.sp(0)
+            arg1 = self.sp(0)
             trace_call(accu, [arg1])
-            for _ in range(bc[pc]): stack.pop()
-            stack.push(arg1)
+            for _ in range(bc[pc]): self.pop()
+            self.push(arg1)
             pc = code_val(accu)
-            env = accu
+            self.env = accu
         elif instr == OP_APPTERM2:
-            arg1 = stack.sp(0)
-            arg2 = stack.sp(1)
+            arg1 = self.sp(0)
+            arg2 = self.sp(1)
             trace_call(accu, [arg1, arg2])
-            for _ in range(bc[pc]): stack.pop()
-            stack.push(arg2)
-            stack.push(arg1)
+            for _ in range(bc[pc]): self.pop()
+            self.push(arg2)
+            self.push(arg1)
             pc = code_val(accu)
-            env = accu
-            extra_args += 1
+            self.env = accu
+            self.extra_args += 1
         elif instr == OP_APPTERM3:
-            arg1 = stack.sp(0)
-            arg2 = stack.sp(1)
-            arg3 = stack.sp(2)
+            arg1 = self.sp(0)
+            arg2 = self.sp(1)
+            arg3 = self.sp(2)
             trace_call(accu, [arg1, arg2, arg3])
-            for _ in range(bc[pc]): stack.pop()
-            stack.push(arg3)
-            stack.push(arg2)
-            stack.push(arg1)
+            for _ in range(bc[pc]): self.pop()
+            self.push(arg3)
+            self.push(arg2)
+            self.push(arg1)
             pc = code_val(accu)
-            env = accu
-            extra_args += 2
+            self.env = accu
+            self.extra_args += 2
         elif instr == OP_RETURN:
             npop = bc[pc]
             pc += 1
-            for _ in range(npop): stack.pop()
+            for _ in range(npop): self.pop()
 
-            if extra_args > 0:
-                extra_args -= 1
+            if self.extra_args > 0:
+                self.extra_args -= 1
                 pc = code_val(accu)
-                env = accu
+                self.env = accu
             else:
-                pc = to_pc(stack.pop())
-                env = stack.pop()
-                extra_args = to_int(stack.pop())
+                pc = to_pc(self.pop())
+                self.env = self.pop()
+                self.extra_args = to_int(self.pop())
         elif instr == OP_RESTART:
-            num_args = len(env._fields) - 2
-            assert num_args >= 0, env
+            num_args = len(self.env._fields) - 2
+            assert num_args >= 0, self.env
             for i in range(num_args):
-                stack.push(env.field((num_args - i - 1) + 2))
-            env = env.field(1)
-            extra_args += num_args
+                self.push(self.env.field((num_args - i - 1) + 2))
+            self.env = self.env.field(1)
+            self.extra_args += num_args
         elif instr == OP_GRAB:
             required = bc[pc]
             pc += 1
-            if extra_args >= required:
-                extra_args -= required
+            if self.extra_args >= required:
+                self.extra_args -= required
             else:
-                num_args = 1 + extra_args
+                num_args = 1 + self.extra_args
                 # print(stack, num_args)
                 accu = make_block(num_args + 2, Closure_tag)
-                accu.set_field(1, env)
+                accu.set_field(1, self.env)
                 for i in range(num_args):
-                    accu.set_field(i + 2, stack.pop())
+                    accu.set_field(i + 2, self.pop())
                 set_code_val(accu, pc - 3)
-                pc = to_pc(stack.pop())
-                env = stack.pop()
-                extra_args = to_int(stack.pop())
+                pc = to_pc(self.pop())
+                self.env = self.pop()
+                self.extra_args = to_int(self.pop())
         elif instr == OP_CLOSURE:
             nvars = bc[pc]
             pc += 1
 
             if nvars > 0:
-                stack.push(accu)
+                self.push(accu)
 
             accu = make_block(1 + nvars, Closure_tag)
             for i in range(nvars):
-                accu.set_field(i + 1, stack.sp(0))
-                stack.pop()
+                accu.set_field(i + 1, self.sp(0))
+                self.pop()
 
             set_code_val(accu, pc + bc[pc])
             pc += 1
@@ -556,15 +577,15 @@ def eval_bc(prims, global_data, bc):
 
             blksize = nfuncs * 2 - 1 + nvars
             if nvars > 0:
-                stack.push(accu)
+                self.push(accu)
 
             accu = make_block(blksize, Closure_tag)
             for i in range(nvars):
-                accu.set_field(nfuncs * 2 - 1 + i, stack.sp(0))
-                stack.pop()
+                accu.set_field(nfuncs * 2 - 1 + i, self.sp(0))
+                self.pop()
 
             set_code_val(accu, pc + bc[pc])
-            stack.push(accu)
+            self.push(accu)
             accu._envoffsettop = accu
             accu._envoffsetdelta = 0
             for i in range(1, nfuncs):
@@ -572,7 +593,7 @@ def eval_bc(prims, global_data, bc):
                 b._envoffsettop = accu
                 b._envoffsetdelta = i * 2
                 b.set_field(0, make_int(pc + bc[pc + i]))
-                stack.push(b)
+                self.push(b)
                 accu.set_field(i * 2, b)
                 accu.set_field(i * 2 - 1, make_string('closureoffsettaint'))
             pc += nfuncs
@@ -580,48 +601,48 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_OFFSETCLOSUREM2:
             unsupp()
         elif instr == OP_OFFSETCLOSURE0:
-            accu = env
+            accu = self.env
         elif instr == OP_OFFSETCLOSURE2:
-            accu = offset_field(env, 2) # offset_field
+            accu = offset_field(self.env, 2) # offset_field
         elif instr == OP_OFFSETCLOSURE:
             n = bc[pc]
             pc += 1
-            accu = offset_field(env, n) # offset_field
+            accu = offset_field(self.env, n) # offset_field
         elif instr == OP_PUSHOFFSETCLOSUREM2:
             unsupp()
         elif instr == OP_PUSHOFFSETCLOSURE0:
-            stack.push(accu)
-            accu = env
+            self.push(accu)
+            accu = self.env
         elif instr == OP_PUSHOFFSETCLOSURE2:
-            stack.push(accu)
-            accu = offset_field(env, 2) # offset_field
+            self.push(accu)
+            accu = offset_field(self.env, 2) # offset_field
         elif instr == OP_PUSHOFFSETCLOSURE:
-            stack.push(accu)
+            self.push(accu)
             n = bc[pc]
             pc += 1
-            accu = offset_field(env, n) # offset_field
+            accu = offset_field(self.env, n) # offset_field
         elif instr == OP_GETGLOBAL:
             n = bc[pc]
             pc += 1
-            accu = global_data[n]
+            accu = self.global_data[n]
         elif instr == OP_PUSHGETGLOBAL:
-            stack.push(accu)
+            self.push(accu)
             n = bc[pc]
             pc += 1
-            accu = global_data[n]
+            accu = self.global_data[n]
             # print(n, global_data[n - 2 : n + 3])
         elif instr == OP_GETGLOBALFIELD:
             n = bc[pc]
             pc += 1
-            accu = global_data[n]
+            accu = self.global_data[n]
             n = bc[pc]
             pc += 1
             accu = accu.field(n)
         elif instr == OP_PUSHGETGLOBALFIELD:
-            stack.push(accu)
+            self.push(accu)
             n = bc[pc]
             pc += 1
-            accu = global_data[n]
+            accu = self.global_data[n]
             n = bc[pc]
             pc += 1
             #dbg(lambda: ('__ field', n, accu.field(n)))
@@ -629,7 +650,7 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_SETGLOBAL:
             n = bc[pc]
             pc += 1
-            global_data[n] = accu
+            self.global_data[n] = accu
             accu = Val_unit
         elif instr == OP_ATOM0:
             accu = ATOMS[0]
@@ -638,10 +659,10 @@ def eval_bc(prims, global_data, bc):
             pc += 1
             accu = ATOMS[n]
         elif instr == OP_PUSHATOM0:
-            stack.push(accu)
+            self.push(accu)
             accu = ATOMS[0]
         elif instr == OP_PUSHATOM:
-            stack.push(accu)
+            self.push(accu)
             n = bc[pc]
             pc += 1
             accu = ATOMS[n]
@@ -654,7 +675,7 @@ def eval_bc(prims, global_data, bc):
             b = make_block(wosize, tag)
             b.set_field(0, accu)
             for i in range(1, wosize):
-                b.set_field(i, stack.pop())
+                b.set_field(i, self.pop())
             accu = b
         elif instr == OP_MAKEBLOCK1:
             tag = bc[pc]
@@ -667,15 +688,15 @@ def eval_bc(prims, global_data, bc):
             pc += 1
             b = make_block(2, tag)
             b.set_field(0, accu)
-            b.set_field(1, stack.pop())
+            b.set_field(1, self.pop())
             accu = b
         elif instr == OP_MAKEBLOCK3:
             tag = bc[pc]
             pc += 1
             b = make_block(3, tag)
             b.set_field(0, accu)
-            b.set_field(1, stack.pop())
-            b.set_field(2, stack.pop())
+            b.set_field(1, self.pop())
+            b.set_field(2, self.pop())
             accu = b
         elif instr == OP_MAKEFLOATBLOCK:
             n = bc[pc]
@@ -683,7 +704,7 @@ def eval_bc(prims, global_data, bc):
             b = make_block(tag=0, size=pc)
             b.set_field(0, accu)
             for i in range(1, n):
-                b.set_field(i, stack.pop())
+                b.set_field(i, self.pop())
             accu = b
         elif instr == OP_GETFIELD0:
             accu = accu.field(0)
@@ -700,31 +721,31 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_GETFLOATFIELD:
             unsupp()
         elif instr == OP_SETFIELD0:
-            accu.set_field(0, stack.sp(0))
-            stack.pop()
+            accu.set_field(0, self.sp(0))
+            self.pop()
             accu = Val_unit
         elif instr == OP_SETFIELD1:
-            accu.set_field(1, stack.sp(0))
-            stack.pop()
+            accu.set_field(1, self.sp(0))
+            self.pop()
             accu = Val_unit
         elif instr == OP_SETFIELD2:
-            accu.set_field(2, stack.sp(0))
-            stack.pop()
+            accu.set_field(2, self.sp(0))
+            self.pop()
             accu = Val_unit
         elif instr == OP_SETFIELD3:
-            accu.set_field(3, stack.sp(0))
-            stack.pop()
+            accu.set_field(3, self.sp(0))
+            self.pop()
             accu = Val_unit
         elif instr == OP_SETFIELD:
             n = bc[pc]
             pc += 1
-            accu.set_field(n, stack.sp(0))
-            stack.pop()
+            accu.set_field(n, self.sp(0))
+            self.pop()
             accu = Val_unit
         elif instr == OP_SETFLOATFIELD:
             n = bc[pc]
             pc += 1
-            accu.set_field(n, stack.pop())
+            accu.set_field(n, self.pop())
             accu = Val_unit
         elif instr == OP_VECTLENGTH:
             accu = make_int(len(accu._fields))
@@ -765,59 +786,59 @@ def eval_bc(prims, global_data, bc):
             n = bc[pc]
             pc += 1
 
-            stack.push(make_int(extra_args))
-            stack.push(env)
-            stack.push(make_int(trap_sp))
-            stack.push(make_int(pc - 1 + n))
-            trap_sp = stack.len()
+            self.push(make_int(self.extra_args))
+            self.push(self.env)
+            self.push(make_int(self.trap_sp))
+            self.push(make_int(pc - 1 + n))
+            self.trap_sp = self.len()
         elif instr == OP_POPTRAP:
-            trap_sp = to_int(stack.sp(1))
-            assert trap_sp <= stack.len()
-            for _ in range(4): stack.pop()
+            self.trap_sp = to_int(self.sp(1))
+            assert self.trap_sp <= self.len()
+            for _ in range(4): self.pop()
         elif instr == OP_RAISE:
-            if trap_sp == -1:
+            if self.trap_sp == -1:
                 raise Exception('terminated with exception %s' % accu)
 
-            assert trap_sp <= stack.len(), (trap_sp, stack.len())
-            while stack.len() > trap_sp:
-                stack.pop()
+            assert self.trap_sp <= self.len(), (self.trap_sp, self.len())
+            while self.len() > self.trap_sp:
+                self.pop()
 
-            pc = to_int(stack.pop())
-            trap_sp = to_int(stack.pop())
-            env = stack.pop()
-            extra_args = to_int(stack.pop())
+            pc = to_int(self.pop())
+            self.trap_sp = to_int(self.pop())
+            self.env = self.pop()
+            self.extra_args = to_int(self.pop())
         elif instr == OP_CHECK_SIGNALS:
             pass
         elif instr == OP_C_CALL1:
             n = bc[pc]
             pc += 1
-            accu = prims.call1(n, accu)
+            accu = self.prims.call1(n, accu)
         elif instr == OP_C_CALL2:
             n = bc[pc]
             pc += 1
-            accu = prims.call2(n, accu, stack.sp(0))
-            stack.pop()
+            accu = self.prims.call2(n, accu, self.sp(0))
+            self.pop()
         elif instr == OP_C_CALL3:
             n = bc[pc]
             pc += 1
-            accu = prims.call3(n, accu, stack.sp(0), stack.sp(1))
-            stack.pop()
-            stack.pop()
+            accu = self.prims.call3(n, accu, self.sp(0), self.sp(1))
+            self.pop()
+            self.pop()
         elif instr == OP_C_CALL4:
             n = bc[pc]
             pc += 1
-            accu = prims.call4(n, accu, stack.sp(0), stack.sp(1), stack.sp(2))
-            stack.pop()
-            stack.pop()
-            stack.pop()
+            accu = self.prims.call4(n, accu, self.sp(0), self.sp(1), self.sp(2))
+            self.pop()
+            self.pop()
+            self.pop()
         elif instr == OP_C_CALL5:
             n = bc[pc]
             pc += 1
-            accu = prims.call5(n, accu, stack.sp(0), stack.sp(1), stack.sp(2), stack.sp(3))
-            stack.pop()
-            stack.pop()
-            stack.pop()
-            stack.pop()
+            accu = self.prims.call5(n, accu, self.sp(0), self.sp(1), self.sp(2), self.sp(3))
+            self.pop()
+            self.pop()
+            self.pop()
+            self.pop()
         elif instr == OP_C_CALLN:
             unsupp()
         elif instr == OP_CONST0:
@@ -832,57 +853,57 @@ def eval_bc(prims, global_data, bc):
             accu = make_int(bc[pc])
             pc += 1
         elif instr == OP_PUSHCONST0:
-            stack.push(accu)
+            self.push(accu)
             accu = make_int(0)
         elif instr == OP_PUSHCONST1:
-            stack.push(accu)
+            self.push(accu)
             accu = make_int(1)
         elif instr == OP_PUSHCONST2:
-            stack.push(accu)
+            self.push(accu)
             accu = make_int(2)
         elif instr == OP_PUSHCONST3:
-            stack.push(accu)
+            self.push(accu)
             accu = make_int(3)
         elif instr == OP_PUSHCONSTINT:
-            stack.push(accu)
+            self.push(accu)
             accu = make_int(bc[pc])
             pc += 1
         elif instr == OP_NEGINT:
             accu = make_int(0 if is_true(accu) else 1)
         elif instr == OP_ADDINT:
-            accu = make_int(to_int(accu) + to_int(stack.pop()))
+            accu = make_int(to_int(accu) + to_int(self.pop()))
         elif instr == OP_SUBINT:
-            accu = make_int(to_int(accu) - to_int(stack.pop()))
+            accu = make_int(to_int(accu) - to_int(self.pop()))
         elif instr == OP_MULINT:
-            accu = make_int(to_int(accu) * to_int(stack.pop()))
+            accu = make_int(to_int(accu) * to_int(self.pop()))
         elif instr == OP_DIVINT:
-            accu = make_int(to_int(accu) / to_int(stack.pop()))
+            accu = make_int(to_int(accu) / to_int(self.pop()))
         elif instr == OP_MODINT:
-            accu = make_int(to_int(accu) % to_int(stack.pop()))
+            accu = make_int(to_int(accu) % to_int(self.pop()))
         elif instr == OP_ANDINT:
-            accu = make_int(to_int(accu) & to_int(stack.pop()))
+            accu = make_int(to_int(accu) & to_int(self.pop()))
         elif instr == OP_ORINT:
-            accu = make_int(to_int(accu) | to_int(stack.pop()))
+            accu = make_int(to_int(accu) | to_int(self.pop()))
         elif instr == OP_XORINT:
-            accu = make_int(to_int(accu) ^ to_int(stack.pop()))
+            accu = make_int(to_int(accu) ^ to_int(self.pop()))
         elif instr == OP_LSLINT:
-            accu = make_int(to_int(accu) << to_int(stack.pop()))
+            accu = make_int(to_int(accu) << to_int(self.pop()))
         elif instr == OP_LSRINT:
-            accu = make_int(to_uint(accu) >> to_int(stack.pop())) # TODO: logical shift
+            accu = make_int(to_uint(accu) >> to_int(self.pop())) # TODO: logical shift
         elif instr == OP_ASRINT:
-            accu = make_int(to_int(accu) >> to_int(stack.pop())) # TODO: arthmetic shift
+            accu = make_int(to_int(accu) >> to_int(self.pop())) # TODO: arthmetic shift
         elif instr == OP_EQ:
-            accu = make_int(eq(stack.pop(), accu))
+            accu = make_int(eq(self.pop(), accu))
         elif instr == OP_NEQ:
-            accu = make_int(not eq(stack.pop(), accu))
+            accu = make_int(not eq(self.pop(), accu))
         elif instr == OP_LTINT:
-            accu = make_bool(to_int(accu) < to_int(stack.pop()))
+            accu = make_bool(to_int(accu) < to_int(self.pop()))
         elif instr == OP_LEINT:
-            accu = make_bool(to_int(accu) <= to_int(stack.pop()))
+            accu = make_bool(to_int(accu) <= to_int(self.pop()))
         elif instr == OP_GTINT:
-            accu = make_bool(to_int(accu) > to_int(stack.pop()))
+            accu = make_bool(to_int(accu) > to_int(self.pop()))
         elif instr == OP_GEINT:
-            accu = make_int(to_int(accu) >= to_int(stack.pop()))
+            accu = make_int(to_int(accu) >= to_int(self.pop()))
         elif instr == OP_OFFSETINT:
             accu = make_int(to_int(accu) + bc[pc])
             pc += 1
@@ -949,7 +970,7 @@ def eval_bc(prims, global_data, bc):
         elif instr == OP_GETDYNMET:
             unsupp()
         elif instr == OP_STOP:
-            return accu
+            return -1
         elif instr == OP_EVENT:
             unsupp()
         elif instr == OP_BREAK:
@@ -962,6 +983,9 @@ def eval_bc(prims, global_data, bc):
             unsupp()
         else:
             raise Exception('invalid opcode %d' % instr)
+
+        self.accu = accu
+        return pc
 
 if sys.argv[0].endswith('rpython'):
     def make_int_array(data):
@@ -982,7 +1006,7 @@ def entry_point(argv):
     prims = Prims(exe_dict['PRIM'].split('\0'), argv)
     global_data = unmarshal(exe_dict['DATA'])._fields
 
-    eval_bc(prims=prims, global_data=global_data, bc=bytecode)
+    Intereter(prims, global_data).eval(bytecode)
     return 0
 
 def jitpolicy(driver):
