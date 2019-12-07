@@ -1,11 +1,11 @@
-import sys, subprocess, os
+import sys, subprocess, os, colorama
 
 nonstop = bool(os.environ.get('NONSTOP'))
 ok = 0
 fail = 0
 
 for test in sys.argv[1:]:
-    print(test)
+    print(colorama.Fore.GREEN + test + colorama.Style.RESET_ALL)
     if subprocess.call(['ocamlc', '-g', test, '-o', 'test.byte']) != 0:
         if nonstop:
             continue
@@ -13,7 +13,7 @@ for test in sys.argv[1:]:
             sys.exit('compilation failed')
 
     try:
-        out = subprocess.check_output(['python', 'bytecode.py', 'test.byte'])
+        out = subprocess.check_output(['pypy', 'bytecode.py', 'test.byte'])
     except Exception:
         if nonstop:
             fail += 1

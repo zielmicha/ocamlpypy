@@ -1,3 +1,4 @@
+from rpython.rlib.rarithmetic import r_uint, intmask
 
 Closure_tag = 247
 Object_tag = 248
@@ -19,15 +20,48 @@ class Int64(Root):
     def hash(self):
         return self.i
 
+    def custom_type_id(self):
+        return 3
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Int64)
+        return cmp(self.i, other.i)
+
+def int32_signed_mul(a, b):
+    if a >= 2**31: a -= 2**32
+    if b >= 2**31: b -= 2**32
+    return (a * b) & 0xFFFFFFFF
+
+def int32_signed_div(a, b):
+    if a >= 2**31: a -= 2**32
+    if b >= 2**31: b -= 2**32
+    return (a / b) & 0xFFFFFFFF
+
+def int32_signed_mod(a, b):
+    if a >= 2**31: a -= 2**32
+    if b >= 2**31: b -= 2**32
+    return (a % b) & 0xFFFFFFFF
+
+def int32_signed_rshift(a, b):
+    if a >= 2**31: a -= 2**32
+    return a >> b
+
 class Int32(Root):
     def __init__(self, i):
-        self.i = i
+        self.i = i & 0xFFFFFFFF
 
     def __repr__(self):
         return 'Int32(%s)' % self.i
 
     def hash(self):
         return self.i
+
+    def custom_type_id(self):
+        return 4
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Int32)
+        return cmp(self.i, other.i)
 
 class Block(Root):
     def __init__(self, tag, size):
@@ -65,6 +99,20 @@ class Block(Root):
             i &= 0xFFFFFFFF
         return i
 
+    def custom_type_id(self):
+        return 1
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Block)
+        if self._tag != other._tag:
+            return cmp(self._tag, other._tag)
+        else:
+            for i in range(min(len(self._fields), len(other._fields))):
+                d = cmp(self._fields[i], other._fields[i])
+                if d != 0: return d
+
+            return cmp(len(self._fields), len(other._fields))
+
 def is_block(x):
     return isinstance(x, Block)
 
@@ -86,7 +134,7 @@ def to_int(a):
 
 def to_uint(a):
     assert isinstance(a, Int), a
-    return a.i # TODO
+    return r_uint(a.i) # TODO
 
 def make_int(a):
     assert isinstance(a, int) or isinstance(a, long), a
@@ -101,6 +149,13 @@ class Float(Root):
 
     def __repr__(self):
         return 'Float(%s)' % self.f
+
+    def custom_type_id(self):
+        return 7
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Float)
+        return cmp(self.f, other.f)
 
 class String(Root):
     def __init__(self, s):
@@ -118,6 +173,13 @@ class String(Root):
             i &= 0xFFFFFFFF
         return i
 
+    def custom_type_id(self):
+        return 6
+
+    def _poly_compare(self, other):
+        assert isinstance(other, String)
+        return cmp(self.s, other.s)
+
 class Bytes(Root):
     def __init__(self, s):
         self.s = s
@@ -134,6 +196,13 @@ class Bytes(Root):
             i &= 0xFFFFFFFF
         return i
 
+    def custom_type_id(self):
+        return 5
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Bytes)
+        return cmp(self.s, other.s)
+
 class Int(Root):
     def __init__(self, i):
         self.i = i
@@ -146,6 +215,13 @@ class Int(Root):
 
     def __str__(self):
         return 'Int(%s)' % self.i
+
+    def custom_type_id(self):
+        return 2
+
+    def _poly_compare(self, other):
+        assert isinstance(other, Int)
+        return cmp(self.i, other.i)
 
 def eq(a, b):
     if isinstance(a, Int) and isinstance(b, Int):
@@ -189,6 +265,12 @@ def make_bytes(data):
 def to_bytes(data):
     assert isinstance(data, Bytes)
     return data.s
+
+def poly_compare(a, b):
+    if a.custom_type_id() != b.custom_type_id():
+        return cmp(a.custom_type_id(), b.custom_type_id())
+    else:
+        return a._poly_compare(b)
 
 Val_unit = make_int(0)
 

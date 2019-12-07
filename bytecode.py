@@ -4,6 +4,10 @@ import colorama
 from ocaml_values import *
 from ocaml_marshal import unmarshal, parse_executable
 
+from rpython.rlib.objectmodel import always_inline
+from rpython.rlib.rarithmetic import r_uint, intmask
+from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe
+
 def trace_call(env, args):
     if dbg:
         dbg('call', code_val(env), args)
@@ -20,6 +24,8 @@ else:
     dbg = None
 
 class Prims:
+    _immutable_ = True
+
     def __init__(self, names, argv):
         self.names = names
         self.argv = argv
@@ -34,7 +40,7 @@ def call%d(self, index, *args):
     if self.funcs%d:
        res = self.funcs%d[name](self, *args)
     else:
-       raise Exception("no functions of this arity")
+       raise Exception("%%s: no functions of this arity" %% name)
     Root.check(res)
     return res''' % (i, i, i)
 
@@ -44,6 +50,12 @@ def call%d(self, index, *args):
 
     def caml_fresh_oo_id(self, _):
         return make_int(666)
+
+    def caml_alloc_dummy(self, size):
+        return Block(tag=0, size=size)
+
+    def caml_alloc_dummy_function(self, size, arity):
+        return Block(tag=0, size=size)
 
     def caml_int64_float_of_bits(self, _):
         return make_float(0.666) # TODO
@@ -74,6 +86,9 @@ def call%d(self, index, *args):
         return make_array([make_string("ocamlpypy"), make_array([make_string('ocamlpypy')] + [
             make_string(arg) for arg in self.argv
         ])])
+
+    def caml_sys_executable_name(self, _):
+        return make_string("ocamlpypy")
 
     def caml_sys_getenv(self, name):
         return make_string(os.environ.get(to_str(name)) or '')
@@ -109,6 +124,9 @@ def call%d(self, index, *args):
     def caml_sys_const_max_wosize(self, _):
         return make_int(2**20)
 
+    def caml_sys_exit(self, code):
+        os._exit(to_int(code))
+
     def caml_ml_string_length(self, s):
         return make_int(len(to_str(s)))
 
@@ -121,13 +139,22 @@ def call%d(self, index, *args):
         os.write(1, data)
         return make_int(0)
 
-    def caml_format_int(self, fmt, n_):
+    def format_int(self, fmt, n):
         fmt_s = to_str(fmt)
-        n = to_int(n_)
+        # TODO
         if fmt_s == '%d':
             return make_string('%d' % n)
+        elif fmt_s == '0x%X':
+            return make_string('0x%X' % n)
         else:
             raise Exception('unknown format %s' % fmt_s)
+
+    def caml_format_int(self, fmt, n_):
+        return self.format_int(fmt, to_int(n_))
+
+    def caml_int32_format(self, fmt, n_):
+        assert isinstance(n_, Int32)
+        return self.format_int(fmt, n_.i)
 
     def caml_nativeint_shift_left(self, a, b):
         assert isinstance(a, Int64), a
@@ -141,7 +168,12 @@ def call%d(self, index, *args):
     def caml_nativeint_sub(self, a, b):
         assert isinstance(a, Int64), a
         assert isinstance(b, Int64), b
-        return Int64(a.i - b.i)
+        return Int64(intmask(a.i - b.i))
+
+    def caml_nativeint_add(self, a, b):
+        assert isinstance(a, Int64), a
+        assert isinstance(b, Int64), b
+        return Int64(intmask(a.i + b.i))
 
     def caml_make_vect(self, size, init):
         return make_array([ init for i in range(to_int(size)) ])
@@ -179,11 +211,144 @@ def call%d(self, index, *args):
             assert isinstance(b, Bytes)
         return make_bool(a == b)
 
-    def caml_int_of_string(self, n):
-        return make_int(int(to_str(n)))
+    def int_of_string(self, n):
+        s = to_str(n).replace('_', '')
+        return int(s, 0)
 
-    def caml_string_equal(self, a, b):
+    def caml_int_of_string(self, n):
+        return make_int(self.int_of_string(n))
+
+    def caml_int32_of_string(self, n):
+        return Int32(self.int_of_string(n))
+
+    def caml_int64_of_string(self, n):
+        return Int64(self.int_of_string(n))
+
+    def caml_int32_neg(self, n):
+        assert isinstance(n, Int32)
+        return Int32(-n.i)
+
+    def caml_int64_of_int(self, n):
+        return Int64(to_int(n))
+
+    def caml_int32_of_int(self, n):
+        return Int32(to_int(n))
+
+    def caml_int32_add(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(a.i + b.i)
+
+    def caml_int32_sub(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(a.i - b.i)
+
+    def caml_int32_mul(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(int32_signed_mul(a.i, b.i))
+
+    def caml_int32_div(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(int32_signed_div(a.i, b.i))
+
+    def caml_int32_shift_right_unsigned(self, a, b):
+        assert isinstance(a, Int32)
+        return Int32(a.i >> to_int(b))
+
+    def caml_int32_shift_right(self, a, b):
+        assert isinstance(a, Int32)
+        return Int32(int32_signed_rshift(a.i, to_int(b)))
+
+    def caml_int32_shift_left(self, a, b):
+        assert isinstance(a, Int32)
+        return Int32(a.i << to_int(b))
+
+    def caml_int32_to_int(self, n):
+        assert isinstance(n, Int32)
+        return make_int(n.i)
+
+    def caml_int32_compare(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return make_int(cmp(a.i, b.i))
+
+    def caml_int32_mod(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(int32_signed_mod(a.i, b.i))
+
+    def caml_int32_and(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(a.i & b.i)
+
+    def caml_int32_or(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(a.i | b.i)
+
+    def caml_int32_xor(self, a, b):
+        assert isinstance(a, Int32)
+        assert isinstance(b, Int32)
+        return Int32(a.i ^ b.i)
+
+    def caml_int32_of_float(self, a):
+        assert isinstance(a, Float)
+        return Int32(int(a.f))
+
+    def caml_int32_to_float(self, a):
+        assert isinstance(a, Int32)
+        return Float(a.i)
+
+    def caml_nativeint_of_int(self, n):
+        return Int64(to_int(n))
+
+    def caml_int_compare(self, a, b):
+        return make_int(cmp(to_int(a), to_int(b)))
+
+    def caml_string_notequal(self, a, b):
         return not self.caml_string_equal(a, b)
+
+    def caml_string_compare(self, a, b):
+        assert isinstance(a, String)
+        assert isinstance(b, String)
+        return make_int(poly_compare(a, b))
+
+    def caml_compare(self, a, b):
+        return make_int(poly_compare(a, b))
+
+    def caml_float_compare(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_int(cmp(a.f, b.f))
+
+    def caml_ge_float(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_bool(a.f >= b.f)
+
+    def caml_gt_float(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_bool(a.f > b.f)
+
+    def caml_le_float(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_bool(a.f <= b.f)
+
+    def caml_lt_float(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_bool(a.f < b.f)
+
+    def caml_neq_float(self, a, b):
+        assert isinstance(a, Float)
+        assert isinstance(b, Float)
+        return make_bool(a.f != b.f)
 
     def caml_neg_float(self, a):
         return make_float(-to_float(a))
@@ -228,13 +393,23 @@ def call%d(self, index, *args):
     def caml_weak_create(self, len):
         return make_string('__weak') # TODO
 
+    def caml_lessthan(self, a, b):
+        return make_bool(poly_compare(a, b) < 0)
+
+    def caml_lessequal(self, a, b):
+        return make_bool(poly_compare(a, b) <= 0)
+
     def caml_greaterequal(self, a, b):
-        #return make_bool(a >= b) # TODO
-        raise Exception('unsupp')
+        return make_bool(poly_compare(a, b) >= 0)
+
+    def caml_greaterthan(self, a, b):
+        return make_bool(poly_compare(a, b) > 0)
 
     def caml_equal(self, a, b):
-        #return make_bool(a == b) # TODO
-        raise Exception('unsupp')
+        return make_bool(poly_compare(a, b) == 0)
+
+    def caml_notequal(self, a, b):
+        return make_bool(not self.caml_equal(a, b))
 
     def caml_eq_float(self, a, b):
         return make_bool(to_float(a) == to_float(b))
@@ -268,10 +443,6 @@ def offset_field(v, n):
     else:
         return v._envoffsettop.field(f)
 
-from rpython.rlib.objectmodel import always_inline
-
-from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe
-
 def get_printable_location(pc, bc):
     return '%d(%s)' % (pc, opcode_list[bc[pc]])
 
@@ -282,7 +453,8 @@ jitdriver = JitDriver(
     get_printable_location=get_printable_location)
 
 class Intereter:
-    _virtualizable_ = ['extra_args', 'accu', 'trap_sp', 'env', '_stack']
+    _virtualizable_ = ['extra_args', 'accu', 'env', '_stack', '_stack_top']
+    _immutable_fields_ = ['prims']
 
     def __init__(self, prims, global_data):
         self.prims = prims
@@ -302,7 +474,8 @@ class Intereter:
             jitdriver.jit_merge_point(
                 frame=self, bc=bc, pc=pc)
 
-            self._stack_top = hint(self._stack_top, promote=True)
+            #self._stack_top = hint(self._stack_top, promote=True)
+            self.extra_args = hint(self.extra_args, promote=True)
 
             pc = handle_opcode(self, bc, pc)
             if pc == -1: break
@@ -891,7 +1064,7 @@ def handle_opcode(self, bc, pc):
         elif instr == OP_LSRINT:
             accu = make_int(to_uint(accu) >> to_int(self.pop())) # TODO: logical shift
         elif instr == OP_ASRINT:
-            accu = make_int(to_int(accu) >> to_int(self.pop())) # TODO: arthmetic shift
+            accu = make_int(intmask(to_int(accu) >> to_int(self.pop())))
         elif instr == OP_EQ:
             accu = make_int(eq(self.pop(), accu))
         elif instr == OP_NEQ:

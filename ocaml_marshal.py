@@ -31,14 +31,16 @@ CODE_CUSTOM = 0x12
 CODE_CUSTOM_LEN = 0x18
 CODE_CUSTOM_FIXED = 0x19
 
-trailer_magic = b'Caml1999X011'
+trailer_magic = b'Caml1999X'
 
 def parse_executable(data):
-    if not data.endswith(trailer_magic):
+    if len(data) <= 12:
+        raise Exception('file too short')
+    if not data[len(data)-12:len(data)-3].endswith(trailer_magic):
         raise Exception('invalid magic %s' % data[max(0, len(data)-len(trailer_magic)):])
 
     pos = len(data)
-    pos -= len(trailer_magic)
+    pos -= len(trailer_magic) + 3
     pos -= 4
     assert pos >= 0
     num_sections, = struct.unpack('>I', data[pos:pos + 4])
@@ -182,7 +184,7 @@ class Unmarshaler:
                 if code == CODE_SHARED32:
                     id, = struct.unpack('>I', data.read(4))
                     return self.get_shared(id)
-                if code == CODE_CUSTOM:
+                if code in (CODE_CUSTOM, CODE_CUSTOM_FIXED):
                     id = data.read(3)
                     if id == '_j\0':
                         n, = struct.unpack('<q', data.read(8))
