@@ -5,10 +5,10 @@ Infix_tag = 249
 String_tag = 252
 Val_unit = 0
 
-class Root:
+class Root(object):
     @staticmethod
     def check(x):
-        assert isinstance(x, (Root, str, bytearray)), x
+        assert isinstance(x, Root), x
 
 class Int64(Root):
     def __init__(self, i):
@@ -84,6 +84,20 @@ class Float(Root):
     def __repr__(self):
         return 'Float(%s)' % self.f
 
+class String(Root):
+    def __init__(self, s):
+        self.s = s
+
+    def __repr__(self):
+        return 'String(%r)' % self.s
+
+class Bytes(Root):
+    def __init__(self, s):
+        self.s = s
+
+    def __repr__(self):
+        return 'Bytes(%r)' % str(self.s)
+
 class Int(Root):
     def __init__(self, i):
         self.i = i
@@ -140,8 +154,16 @@ def make_array(arr):
 
 def make_string(data):
     assert type(data) == str
-    return data
+    return String(data)
 
 def to_str(data):
-    assert type(data) == str
-    return data
+    assert isinstance(data, String)
+    return data.s
+
+def make_bytes(data):
+    assert type(data) == bytearray
+    return String(data)
+
+def to_bytes(data):
+    assert type(data) == Bytes
+    return data.s

@@ -65,10 +65,10 @@ class Prims:
         return make_float(0.666) # TODO
 
     def caml_ml_open_descriptor_in(self, _):
-        return '_stdin' # TODO
+        return String('_stdin')
 
     def caml_ml_open_descriptor_out(self, _):
-        return '_stdout' # TODO
+        return String('_stdout')
 
     def caml_ml_out_channels_list(self, _):
         return make_int(0) # TODO
@@ -82,10 +82,10 @@ class Prims:
         sys.stdout.flush()
 
     def caml_create_bytes(self, length):
-        return bytearray(to_int(length))
+        return make_bytes(bytearray(to_int(length)))
 
     def caml_sys_get_argv(self, _):
-        return make_array(["ocamlpypy", make_array(['ocamlpypy'] + [
+        return make_array([make_string("ocamlpypy"), make_array([make_string('ocamlpypy')] + [
             make_string(arg) for arg in sys.argv[2:]
         ])])
 
@@ -94,7 +94,7 @@ class Prims:
 
     def caml_sys_get_config(self, _):
         return make_array([
-            'pypy',
+            make_string('pypy'),
             make_int(64), # bits
             make_int(0) # little endian
         ])
@@ -124,15 +124,14 @@ class Prims:
         return make_int(2**20)
 
     def caml_ml_string_length(self, s):
-        return make_int(len(s))
+        return make_int(len(to_str(s)))
 
     def caml_ml_output(self, stream, data, ofs, length):
-        data = data[to_int(ofs) : to_int(ofs) + to_int(length)]
+        data = to_str(data)[to_int(ofs) : to_int(ofs) + to_int(length)]
         sys.stdout.write(data)
 
     def caml_format_int(self, fmt, n):
-        #print('fmt', fmt)
-        return make_string(fmt % (to_int(n)))
+        return make_string(to_str(fmt) % (to_int(n)))
 
     def caml_nativeint_shift_left(self, a, b):
         assert isinstance(a, Int64), a
@@ -251,7 +250,7 @@ def offset_field(v, n):
 def eval_bc(prims, global_data, bc, stack):
     accu = 0
     extra_args = 0
-    env = 'rootenv'
+    env = make_string('rootenv')
     pc = 0
     trap_sp = -1
 
@@ -541,7 +540,7 @@ def eval_bc(prims, global_data, bc, stack):
                 b.set_field(0, make_int(pc + bc[pc + i]))
                 push(b)
                 accu.set_field(i * 2, b)
-                accu.set_field(i * 2 - 1, 'closureoffsettaint')
+                accu.set_field(i * 2 - 1, make_string('closureoffsettaint'))
             pc += nfuncs
 
         elif instr == OP_OFFSETCLOSUREM2:
