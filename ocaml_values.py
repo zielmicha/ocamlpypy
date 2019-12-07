@@ -74,7 +74,7 @@ def to_uint(a):
     return a.i # TODO
 
 def make_int(a):
-    assert isinstance(a, (int, long)), a
+    assert isinstance(a, int) or isinstance(a, long), a
     return Int(a)
 
 class Float(Root):

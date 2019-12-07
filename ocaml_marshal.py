@@ -1,4 +1,4 @@
-import struct
+import my_struct as struct
 from ocaml_values import *
 
 PREFIX_SMALL_BLOCK = 0x80
@@ -31,15 +31,63 @@ CODE_CUSTOM = 0x12
 CODE_CUSTOM_LEN = 0x18
 CODE_CUSTOM_FIXED = 0x19
 
-def unmarshal(data):
+trailer_magic = b'Caml1999X011'
+
+def parse_executable(data):
+    if not data.endswith(trailer_magic):
+        raise Exception('invalid magic %r' % data[max(0, len(data)-len(trailer_magic)):])
+
+    pos = len(data)
+    pos -= len(trailer_magic)
+    pos -= 4
+    assert pos >= 0
+    num_sections, = struct.unpack('>I', data[pos:pos + 4])
+
+    sections = []
+    for i in range(num_sections):
+        pos -= 8
+        assert pos >= 0
+        name = data[pos:pos+4]
+        length, = struct.unpack('>I', data[pos+4:pos+8])
+        sections.append((name, length))
+
+    section_data = {}
+    for name, length in sections:
+        pos -= length
+        assert length >= 0
+        assert pos >= 0
+        section_data[name] = data[pos : pos + length]
+
+    return section_data
+
+class MyStringIO:
+    def __init__(self, data_str):
+        self.data_str = data_str
+        self.pos = 0
+
+    def read(self, n=10000000):
+        assert n >= 0
+        r = self.data_str[self.pos : self.pos + n]
+        self.pos += n
+        return r
+
+def unmarshal(data_str):
+    data = MyStringIO(data_str)
+
     header = data.read(20)
     magic, = struct.unpack('>I', header[:4])
     if magic == 0x8495A6BF:
         header += data.read(12)
 
-        _, data_len, num_objects, whsize = struct.unpack('>ILLL', header[4:])
+        #_, data_len, num_objects, whsize = struct.unpack('>ILLL', header[4:])
+        data_len, = struct.unpack('>L', header[4 + 4:4 + 12])
+        num_objects, = struct.unpack('>L', header[4 + 12:4 + 20])
+        whsize, = struct.unpack('>L', header[4 + 20:])
     elif magic == 0x8495A6BE:
-        data_len, num_objects, _, whsize = struct.unpack('>IIII', header[4:])
+        #data_len, num_objects, _, whsize = struct.unpack('>IIII', header[4:])
+        data_len, = struct.unpack('>I', header[4:8])
+        num_objects, = struct.unpack('>I', header[8:12])
+        whsize, = struct.unpack('>I', header[16:20])
     else:
         raise Exception('bad magic')
 
@@ -55,6 +103,7 @@ class Unmarshaler:
         self._lvl = 0
 
     def intern(self, o):
+        Root.check(o)
         self.intern_table.append(o)
         return o
 
@@ -83,7 +132,7 @@ class Unmarshaler:
         lvl = self._lvl
         self._lvl += 1
 
-        code, = struct.unpack('B', data.read(1))
+        code, = struct.unpack('<B', data.read(1))
 
         def _wosize_hd(hd): return hd >> 10
         def _tag_hd(hd): return hd & 0xFF
@@ -115,17 +164,17 @@ class Unmarshaler:
                 if code == CODE_BLOCK32:
                     hd, = struct.unpack('>I', data.read(4))
                     return self._block(data, _tag_hd(hd), _wosize_hd(hd))
-                if code == CODE_BLOCK64:
-                    hd, = struct.unpack('>Q', data.read(8))
-                    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
+                #if code == CODE_BLOCK64:
+                #    hd, = struct.unpack('>Q', data.read(8))
+                #    return self._block(data, _tag_hd(hd), _wosize_hd(hd))
                 if code == CODE_STRING8:
-                    len, = struct.unpack('B', data.read(1))
+                    len, = struct.unpack('<B', data.read(1))
                     return self.intern(make_string(data.read(len)))
                 if code == CODE_STRING32:
                     len, = struct.unpack('>I', data.read(4))
                     return self.intern(make_string(data.read(len)))
                 if code == CODE_SHARED8:
-                    id, = struct.unpack('B', data.read(1))
+                    id, = struct.unpack('<B', data.read(1))
                     return self.get_shared(id)
                 if code == CODE_SHARED16:
                     id, = struct.unpack('>H', data.read(2))
@@ -139,7 +188,7 @@ class Unmarshaler:
                         n, = struct.unpack('<q', data.read(8))
                         return Int64(n)
                     elif id == '_n\0': # nativeint
-                        t, = struct.unpack('B', data.read(1))
+                        t, = struct.unpack('<B', data.read(1))
                         if t == 2:
                             n, = struct.unpack('>q', data.read(8))
                         elif t == 1:
@@ -158,15 +207,15 @@ class Unmarshaler:
                     return self.intern(f)
                 if code == CODE_DOUBLE_ARRAY32_LITTLE:
                     len, = struct.unpack('>I', data.read(32))
-                    return self.intern([
+                    return self.intern(make_array([
                         make_float(struct.unpack('<d', data.read(8))[0])
                         for i in range(len)
-                    ])
+                    ]))
                 if code == CODE_DOUBLE_ARRAY8_LITTLE:
                     len, = struct.unpack('>B', data.read(1))
-                    return self.intern([
+                    return self.intern(make_array([
                         make_float(struct.unpack('<d', data.read(8))[0])
                         for i in range(len)
-                    ])
+                    ]))
 
                 raise Exception('code 0x%x' % code)

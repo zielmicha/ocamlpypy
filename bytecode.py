@@ -1,37 +1,12 @@
 from __future__ import print_function
-import struct, sys, array, io, os
+import struct, sys, array, StringIO, os
 import colorama
 from ocaml_values import *
-from ocaml_marshal import unmarshal
-
-trailer_magic = b'Caml1999X011'
-
-def parse_executable(data):
-    if not data.endswith(trailer_magic):
-        raise Exception('invalid magic %r' % data[-len(trailer_magic):])
-
-    pos = len(data)
-    pos -= len(trailer_magic)
-    pos -= 4
-    assert pos >= 0
-    num_sections, = struct.unpack('>I', data[pos:pos + 4])
-
-    sections = []
-    for i in range(num_sections):
-        pos -= 8
-        name = data[pos:pos+4].decode()
-        length, = struct.unpack('>I', data[pos+4:pos+8])
-        sections.append((name, length))
-
-    section_data = {}
-    for name, length in sections:
-        pos -= length
-        section_data[name] = data[pos : pos + length]
-
-    return section_data
+from ocaml_marshal import unmarshal, parse_executable
 
 def trace_call(env, args):
-    dbg(lambda: ('call', code_val(env), args))
+    if dbg:
+        dbg('call', code_val(env), args)
 
 opcode_list = [ 'OP_ACC0', 'OP_ACC1', 'OP_ACC2', 'OP_ACC3', 'OP_ACC4', 'OP_ACC5', 'OP_ACC6', 'OP_ACC7', 'OP_ACC', 'OP_PUSH', 'OP_PUSHACC0', 'OP_PUSHACC1', 'OP_PUSHACC2', 'OP_PUSHACC3', 'OP_PUSHACC4', 'OP_PUSHACC5', 'OP_PUSHACC6', 'OP_PUSHACC7', 'OP_PUSHACC', 'OP_POP', 'OP_ASSIGN', 'OP_ENVACC1', 'OP_ENVACC2', 'OP_ENVACC3', 'OP_ENVACC4', 'OP_ENVACC', 'OP_PUSHENVACC1', 'OP_PUSHENVACC2', 'OP_PUSHENVACC3', 'OP_PUSHENVACC4', 'OP_PUSHENVACC', 'OP_PUSH_RETADDR', 'OP_APPLY', 'OP_APPLY1', 'OP_APPLY2', 'OP_APPLY3', 'OP_APPTERM', 'OP_APPTERM1', 'OP_APPTERM2', 'OP_APPTERM3', 'OP_RETURN', 'OP_RESTART', 'OP_GRAB', 'OP_CLOSURE', 'OP_CLOSUREREC', 'OP_OFFSETCLOSUREM2', 'OP_OFFSETCLOSURE0', 'OP_OFFSETCLOSURE2', 'OP_OFFSETCLOSURE', 'OP_PUSHOFFSETCLOSUREM2', 'OP_PUSHOFFSETCLOSURE0', 'OP_PUSHOFFSETCLOSURE2', 'OP_PUSHOFFSETCLOSURE', 'OP_GETGLOBAL', 'OP_PUSHGETGLOBAL', 'OP_GETGLOBALFIELD', 'OP_PUSHGETGLOBALFIELD', 'OP_SETGLOBAL', 'OP_ATOM0', 'OP_ATOM', 'OP_PUSHATOM0', 'OP_PUSHATOM', 'OP_MAKEBLOCK', 'OP_MAKEBLOCK1', 'OP_MAKEBLOCK2', 'OP_MAKEBLOCK3', 'OP_MAKEFLOATBLOCK', 'OP_GETFIELD0', 'OP_GETFIELD1', 'OP_GETFIELD2', 'OP_GETFIELD3', 'OP_GETFIELD', 'OP_GETFLOATFIELD', 'OP_SETFIELD0', 'OP_SETFIELD1', 'OP_SETFIELD2', 'OP_SETFIELD3', 'OP_SETFIELD', 'OP_SETFLOATFIELD', 'OP_VECTLENGTH', 'OP_GETVECTITEM', 'OP_SETVECTITEM', 'OP_GETBYTESCHAR', 'OP_SETBYTESCHAR', 'OP_BRANCH', 'OP_BRANCHIF', 'OP_BRANCHIFNOT', 'OP_SWITCH', 'OP_BOOLNOT', 'OP_PUSHTRAP', 'OP_POPTRAP', 'OP_RAISE', 'OP_CHECK_SIGNALS', 'OP_C_CALL1', 'OP_C_CALL2', 'OP_C_CALL3', 'OP_C_CALL4', 'OP_C_CALL5', 'OP_C_CALLN', 'OP_CONST0', 'OP_CONST1', 'OP_CONST2', 'OP_CONST3', 'OP_CONSTINT', 'OP_PUSHCONST0', 'OP_PUSHCONST1', 'OP_PUSHCONST2', 'OP_PUSHCONST3', 'OP_PUSHCONSTINT', 'OP_NEGINT', 'OP_ADDINT', 'OP_SUBINT', 'OP_MULINT', 'OP_DIVINT', 'OP_MODINT', 'OP_ANDINT', 'OP_ORINT', 'OP_XORINT', 'OP_LSLINT', 'OP_LSRINT', 'OP_ASRINT', 'OP_EQ', 'OP_NEQ', 'OP_LTINT', 'OP_LEINT', 'OP_GTINT', 'OP_GEINT', 'OP_OFFSETINT', 'OP_OFFSETREF', 'OP_ISINT', 'OP_GETMETHOD', 'OP_BEQ', 'OP_BNEQ', 'OP_BLTINT', 'OP_BLEINT', 'OP_BGTINT', 'OP_BGEINT', 'OP_ULTINT', 'OP_UGEINT', 'OP_BULTINT', 'OP_BUGEINT', 'OP_GETPUBMET', 'OP_GETDYNMET', 'OP_STOP', 'OP_EVENT', 'OP_BREAK', 'OP_RERAISE', 'OP_RAISE_NOTRACE', 'OP_GETSTRINGCHAR' ]
 
@@ -39,11 +14,10 @@ for _i, _opcode in enumerate(opcode_list):
     globals()[_opcode] = _i
 
 if os.environ.get('DEBUG'):
-    def dbg(f):
-        print(*f())
+    def dbg(*f):
+        print(*f)
 else:
-    def dbg(f):
-        pass
+    dbg = None
 
 class Prims:
     def __init__(self, names):
@@ -51,7 +25,7 @@ class Prims:
 
     def call(self, index, *args):
         name = self.names[index]
-        dbg(lambda: ('ccall', name, args))
+        if dbg: dbg('ccall', name, args)
         return getattr(self, name)(*args)
 
     def caml_register_named_value(self, vname, val):
@@ -240,14 +214,38 @@ def to_pc(x):
     return to_int(x) & 0xFFFFFFFF
 
 def offset_field(v, n):
-    dbg(lambda: ('offset_field', v._envoffsettop, n,'+', v._envoffsetdelta))
     f = n + v._envoffsetdelta
     if f == 0:
         return v._envoffsettop
     else:
         return v._envoffsettop.field(f)
 
-def eval_bc(prims, global_data, bc, stack):
+from rpython.rlib.objectmodel import always_inline
+
+class Stack:
+    def __init__(self):
+        self._arr = []
+
+    def push(self, v):
+        Root.check(v)
+        self._arr.append(v)
+
+    def pop(self):
+        return self._arr.pop()
+
+    def sp_set(self, target, src):
+        self._arr[len(self._arr) - 1 - target] = self.sp(src)
+
+    def sp(self, k):
+        return self._arr[len(self._arr) - 1 - k]
+
+    def len(self):
+        return len(self._arr)
+
+    def __repr__(self):
+        return repr(self._arr)
+
+def eval_bc(prims, global_data, bc):
     accu = 0
     extra_args = 0
     env = make_string('rootenv')
@@ -255,32 +253,23 @@ def eval_bc(prims, global_data, bc, stack):
     trap_sp = -1
 
     def unsupp():
-        raise Exception('unsupported instr %d = %s' % (instr, opcode_list[instr]))
+        raise Exception('unsupported instr')# %d = %s' % (instr, opcode_list[instr]))
 
-    def push(v):
-        Root.check(v)
-        stack.append(v)
+    stack = Stack()
 
-    def sp(k):
-        return stack[len(stack) - 1 - k]
-
-    def sp_set(k, v):
-        stack[len(stack) - 1 - k] = v
-
-    def pop():
-        return stack.pop()
-
-    def c_call(n, *args):
-        return prims.call(n, *args)
+    push = stack.push
+    pop = stack.pop
+    c_call = prims.call
+    sp = stack.sp
+    set_sp = stack.sp_set
 
     def _set_code_val(b, pc):
-        assert pc >= 0 and pc < len(bc)
+        #assert pc >= 0 and pc < len(bc)
         set_code_val(b, pc)
 
     while True:
         instr = bc[pc]
-        dbg(lambda: (colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', '(' + repr(stack)[-100:] + ')', '__env', repr(env)[:100]))
-        #print(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL)
+        if dbg: dbg(colorama.Fore.RED + 'pc', pc, 'instr', opcode_list[instr], colorama.Style.RESET_ALL + 'accu', repr(accu)[:6000], 'stack', '(' + repr(stack)[-100:] + ')', '__env', repr(env)[:100])
         pc += 1
 
         if instr == OP_ACC0:
@@ -418,10 +407,8 @@ def eval_bc(prims, global_data, bc, stack):
             slotsize = bc[pc]
             newsp = slotsize - nargs
 
-            for i in range(nargs): dbg(lambda: ('arg', sp(i)))
-
-            def set_sp(target, src):
-                stack[len(stack) - 1 - target] = sp(src)
+            if dbg:
+                for i in range(nargs): dbg('arg', sp(i))
 
             i = nargs - 1
             while i >= 0:
@@ -505,9 +492,7 @@ def eval_bc(prims, global_data, bc, stack):
                 push(accu)
 
             accu = make_block(1 + nvars, Closure_tag)
-            dbg(lambda: ('closure', accu, nvars, pc + bc[pc]))
             for i in range(nvars):
-                dbg(lambda: ('closure var', sp(0)))
                 accu.set_field(i + 1, sp(0))
                 pop()
 
@@ -528,7 +513,6 @@ def eval_bc(prims, global_data, bc, stack):
                 accu.set_field(nfuncs * 2 - 1 + i, sp(0))
                 pop()
 
-            dbg(lambda: ('init', pc + bc[pc]))
             _set_code_val(accu, pc + bc[pc])
             push(accu)
             accu._envoffsettop = accu
@@ -596,7 +580,6 @@ def eval_bc(prims, global_data, bc, stack):
             n = bc[pc]
             pc += 1
             global_data[n] = accu
-            dbg(lambda: ('global', n, accu))
             accu = Val_unit
         elif instr == OP_ATOM0:
             accu = ATOMS[0]
@@ -711,7 +694,6 @@ def eval_bc(prims, global_data, bc, stack):
             else:
                 pc += 1
         elif instr == OP_BRANCHIFNOT:
-            dbg(lambda: (accu, is_true(accu)))
             if not is_true(accu):
                 pc += bc[pc]
             else:
@@ -719,17 +701,14 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_SWITCH:
             sizes = bc[pc]
             pc += 1
-            dbg(lambda: ('switch', accu))
             if is_block(accu):
                 index = block_tag(accu)
                 assert index < (sizes >> 16)
-                dbg(lambda: ('switch_block', sizes & 0xFFFF, index))
                 pc += bc[pc + (sizes & 0xFFFF) + index]
             else:
                 index = to_int(accu)
                 assert index < (sizes & 0xFFFF)
                 pc += bc[pc + index]
-            dbg(lambda: ('switch_pc', pc))
         elif instr == OP_BOOLNOT:
             accu = make_int(1 - to_int(accu))
         elif instr == OP_PUSHTRAP:
@@ -740,17 +719,17 @@ def eval_bc(prims, global_data, bc, stack):
             push(env)
             push(make_int(trap_sp))
             push(make_int(pc - 1 + n))
-            trap_sp = len(stack)
+            trap_sp = stack.len()
         elif instr == OP_POPTRAP:
             trap_sp = sp(1)
-            assert trap_sp <= len(stack)
+            assert trap_sp <= stack.len()
             for _ in range(4): pop()
         elif instr == OP_RAISE:
             if trap_sp == -1:
                 raise Exception('terminated with exception %s' % accu)
 
-            assert trap_sp <= len(stack), (trap_sp, len(stack))
-            while len(stack) > trap_sp:
+            assert trap_sp <= stack.len(), (trap_sp, stack.len())
+            while stack.len() > trap_sp:
                 stack.pop()
 
             pc = to_int(pop())
@@ -760,7 +739,6 @@ def eval_bc(prims, global_data, bc, stack):
         elif instr == OP_CHECK_SIGNALS:
             pass
         elif instr == OP_C_CALL1:
-            dbg(lambda: ('stack', stack))
             n = bc[pc]
             pc += 1
             accu = c_call(n, accu)
@@ -935,14 +913,26 @@ def eval_bc(prims, global_data, bc, stack):
         else:
             raise Exception('invalid opcode %d' % instr)
 
+if sys.argv[0].endswith('rpython'):
+    def make_int_array(data):
+        from my_struct import unpack
+
+        assert len(data) % 4 == 0
+        result = [0]*(len(data)//4)
+        for i in range(0, len(result)):
+            result[i] = unpack('<i', data[4*i : 4*i+4])[0]
+        return result
+else:
+    def make_int_array(data):
+        return array.array('i', data)
+
 def entry_point(argv):
     exe_dict = parse_executable(open(argv[1], 'rb').read())
-    bytecode = array.array('i', exe_dict['CODE'])
-    prims = Prims(exe_dict['PRIM'].decode().split('\0'))
-    global_data = unmarshal(io.BytesIO(exe_dict['DATA']))._fields
+    bytecode = make_int_array(exe_dict['CODE'])
+    prims = Prims(exe_dict['PRIM'].split('\0'))
+    global_data = unmarshal(exe_dict['DATA'])._fields
 
-    stack = []
-    eval_bc(prims=prims, global_data=global_data, bc=bytecode, stack=stack)
+    eval_bc(prims=prims, global_data=global_data, bc=bytecode)
 
 def target(*args):
     return entry_point, None
