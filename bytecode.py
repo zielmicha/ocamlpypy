@@ -456,12 +456,13 @@ jitdriver = JitDriver(
     get_printable_location=get_printable_location)
 
 class Frame:
-    _virtualizable_ = ['extra_args', 'accu', 'env', '_stack[*]', '_stack_top']
-    _immutable_fields_ = ['prims']
+    _virtualizable_ = ['extra_args', 'accu', 'env', '_stack[*]', '_stack_top', 'pending_exception']
+    _immutable_fields_ = ['prims', 'global_data']
 
     def __init__(self, prims, global_data,
                  env=make_string('rootenv'),
                  accu=make_int(0)):
+        self = hint(self, access_directly=True, fresh_virtualizable=True)
         self.prims = prims
         self.global_data = global_data
         self.extra_args = 0
@@ -471,7 +472,7 @@ class Frame:
         self.pending_exception = False
 
         self._stack = [Val_unit] * 256
-        self._stack_top = 0
+        self._stack_top = r_uint(0)
 
     def eval(self, bc, pc):
         while True:
@@ -481,7 +482,7 @@ class Frame:
             self._stack_top = hint(self._stack_top, promote=True)
             self.extra_args = hint(self.extra_args, promote=True)
 
-            pc = handle_opcode(self, bc, pc)
+            pc = self.handle_opcode(bc, pc)
             Root.check(self.accu)
             if pc == -1:
                 break
@@ -490,9 +491,9 @@ class Frame:
 
     def push(self, v):
         Root.check(v)
+        self._stack_top = promote(self._stack_top)
         self._stack[self._stack_top] = v
         self._stack_top += 1
-        self._stack_top = promote(self._stack_top)
 
     def pop(self):
         self._stack_top -= 1
@@ -503,38 +504,45 @@ class Frame:
         return r
 
     def sp_swap(self, target, src):
-        self._stack[self._stack_top - 1 - target] = self.sp(src)
+        ind = promote(self._stack_top - 1 - target)
+        assert ind >= 0
+        self._stack[ind] = self.sp(src)
 
     def sp_set(self, k, val):
-        self._stack[self._stack_top - 1 - k] = val
+        ind = promote(self._stack_top - 1 - k)
+        assert ind >= 0
+        self._stack[ind] = val
 
     def sp(self, k):
-        return self._stack[self._stack_top - 1 - k]
+        ind = promote(self._stack_top - 1 - k)
+        assert ind >= 0
+        return self._stack[ind]
 
     def len(self):
-        return self._stack_top
+        return intmask(self._stack_top)
 
-@look_inside
-@unroll_safe
-def handle_raise(self, bc, pc):
-    if self.trap_sp == -1:
-        self.pending_exception = True
-        return -1
+    @look_inside
+    @unroll_safe
+    @always_inline
+    def handle_raise(self, bc, pc):
+        if self.trap_sp == -1:
+            self.pending_exception = True
+            return -1
 
-    assert self.trap_sp <= self.len(), (self.trap_sp, self.len())
-    while self.len() > self.trap_sp:
-        self.pop()
+        assert self.trap_sp <= self.len(), (self.trap_sp, self.len())
+        while self.len() > self.trap_sp:
+            self.pop()
 
-    pc = to_int(self.pop())
-    self.trap_sp = to_int(self.pop())
-    self.env = self.pop()
-    self.extra_args = to_int(self.pop())
-    return pc
+        pc = to_int(self.pop())
+        self.trap_sp = to_int(self.pop())
+        self.env = self.pop()
+        self.extra_args = to_int(self.pop())
+        return pc
 
-#@always_inline
-@look_inside
-@unroll_safe
-def handle_opcode(self, bc, pc):
+    @look_inside
+    @unroll_safe
+    @always_inline
+    def handle_opcode(self, bc, pc):
         instr = bc[pc]
         accu = self.accu
 
@@ -657,7 +665,7 @@ def handle_opcode(self, bc, pc):
             frame.eval(bc, new_pc)
             if frame.pending_exception:
                 self.accu = frame.accu
-                return handle_raise(self, bc, pc)
+                return self.handle_raise(bc, pc)
             accu = frame.accu
 
         elif instr == OP_APPLY1:
@@ -673,7 +681,7 @@ def handle_opcode(self, bc, pc):
             frame.eval(bc, new_pc)
             if frame.pending_exception:
                 self.accu = frame.accu
-                return handle_raise(self, bc, pc)
+                return self.handle_raise(bc, pc)
             accu = frame.accu
         elif instr == OP_APPLY2:
             arg1 = self.pop()
@@ -690,7 +698,7 @@ def handle_opcode(self, bc, pc):
             frame.eval(bc, new_pc)
             if frame.pending_exception:
                 self.accu = frame.accu
-                return handle_raise(self, bc, pc)
+                return self.handle_raise(bc, pc)
             accu = frame.accu
         elif instr == OP_APPLY3:
             arg1 = self.pop()
@@ -709,7 +717,7 @@ def handle_opcode(self, bc, pc):
             frame.eval(bc, new_pc)
             if frame.pending_exception:
                 self.accu = frame.accu
-                return handle_raise(self, bc, pc)
+                return self.handle_raise(bc, pc)
             accu = frame.accu
         elif instr == OP_APPTERM:
             nargs = bc[pc]
@@ -1046,7 +1054,7 @@ def handle_opcode(self, bc, pc):
             assert self.trap_sp <= self.len()
             for _ in range(4): self.pop()
         elif instr == OP_RAISE:
-            return handle_raise(self, bc, pc)
+            return self.handle_raise(bc, pc)
         elif instr == OP_CHECK_SIGNALS:
             pass
         elif instr == OP_C_CALL1:
