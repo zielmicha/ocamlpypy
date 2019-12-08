@@ -6,7 +6,7 @@ from ocaml_marshal import unmarshal, parse_executable
 
 from rpython.rlib.objectmodel import always_inline
 from rpython.rlib.rarithmetic import r_uint, intmask
-from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe
+from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe, promote
 
 def trace_call(env, args):
     if dbg:
@@ -52,10 +52,10 @@ def call%d(self, index, *args):
         return make_int(666)
 
     def caml_alloc_dummy(self, size):
-        return Block(tag=0, size=size)
+        return Block(tag=0, size=to_int(size))
 
     def caml_alloc_dummy_function(self, size, arity):
-        return Block(tag=0, size=size)
+        return Block(tag=0, size=to_int(size))
 
     def caml_int64_float_of_bits(self, _):
         return make_float(0.666) # TODO
@@ -126,6 +126,7 @@ def call%d(self, index, *args):
 
     def caml_sys_exit(self, code):
         os._exit(to_int(code))
+        return Val_unit
 
     def caml_ml_string_length(self, s):
         return make_int(len(to_str(s)))
@@ -145,7 +146,7 @@ def call%d(self, index, *args):
         if fmt_s == '%d':
             return make_string('%d' % n)
         elif fmt_s == '0x%X':
-            return make_string('0x%X' % n)
+            return make_string('0x%x' % n)
         else:
             raise Exception('unknown format %s' % fmt_s)
 
@@ -184,8 +185,8 @@ def call%d(self, index, *args):
         return b
 
     def caml_obj_dup(self, o):
-        b = make_block(tag=o._tag, size=len(o._fields))
-        for i in range(len(o._fields)): b.set_field(i, b.field(i))
+        b = make_block(tag=o.get_tag(), size=o.len_fields())
+        for i in range(o.len_fields()): b.set_field(i, b.field(i))
         return b
 
     def caml_ensure_stack_capacity(self, space):
@@ -204,15 +205,17 @@ def call%d(self, index, *args):
         raise Exception('unsupp')
 
     def caml_string_equal(self, a, b):
-        if isinstance(a, String):
-            assert isinstance(b, String)
-        else:
-            assert isinstance(a, Bytes)
-            assert isinstance(b, Bytes)
-        return make_bool(a == b)
+        return make_bool(poly_compare(a, b) == 0)
+
+    def caml_string_notequal(self, a, b):
+        return make_bool(poly_compare(a, b) != 0)
 
     def int_of_string(self, n):
-        s = to_str(n).replace('_', '')
+        res = []
+        for ch in to_str(n):
+            if ch != '_':
+                res.append(ch)
+        s = ''.join(res)
         return int(s, 0)
 
     def caml_int_of_string(self, n):
@@ -273,7 +276,7 @@ def call%d(self, index, *args):
     def caml_int32_compare(self, a, b):
         assert isinstance(a, Int32)
         assert isinstance(b, Int32)
-        return make_int(cmp(a.i, b.i))
+        return make_int(cmp_i(a.i, b.i))
 
     def caml_int32_mod(self, a, b):
         assert isinstance(a, Int32)
@@ -307,10 +310,7 @@ def call%d(self, index, *args):
         return Int64(to_int(n))
 
     def caml_int_compare(self, a, b):
-        return make_int(cmp(to_int(a), to_int(b)))
-
-    def caml_string_notequal(self, a, b):
-        return not self.caml_string_equal(a, b)
+        return make_int(cmp_i(to_int(a), to_int(b)))
 
     def caml_string_compare(self, a, b):
         assert isinstance(a, String)
@@ -323,7 +323,7 @@ def call%d(self, index, *args):
     def caml_float_compare(self, a, b):
         assert isinstance(a, Float)
         assert isinstance(b, Float)
-        return make_int(cmp(a.f, b.f))
+        return make_int(cmp_f(a.f, b.f))
 
     def caml_ge_float(self, a, b):
         assert isinstance(a, Float)
@@ -370,7 +370,7 @@ def call%d(self, index, *args):
         len = to_int(len_)
         assert ofs >= 0
         assert len >= 0
-        return make_array(a._fields[ofs : ofs+len])
+        return make_array(a.get_fields()[ofs : ofs+len])
 
     def caml_make_array(self, init):
         return init
@@ -383,12 +383,14 @@ def call%d(self, index, *args):
 
     def caml_array_set_addr(self, array, index, val):
         array.set_field(to_int(index), val)
+        return Val_unit
 
     def caml_array_get(self, array, index):
         return array.field(to_int(index))
 
     def caml_array_set(self, array, index, val):
         array.set_field(to_int(index), val)
+        return Val_unit
 
     def caml_weak_create(self, len):
         return make_string('__weak') # TODO
@@ -437,6 +439,7 @@ def to_pc(x):
     return to_int(x) & 0xFFFFFFFF
 
 def offset_field(v, n):
+    assert isinstance(v, Block)
     f = n + v._envoffsetdelta
     if f == 0:
         return v._envoffsettop
@@ -452,43 +455,49 @@ jitdriver = JitDriver(
     virtualizables = ['frame'],
     get_printable_location=get_printable_location)
 
-class Intereter:
-    _virtualizable_ = ['extra_args', 'accu', 'env', '_stack', '_stack_top']
+class Frame:
+    _virtualizable_ = ['extra_args', 'accu', 'env', '_stack[*]', '_stack_top']
     _immutable_fields_ = ['prims']
 
-    def __init__(self, prims, global_data):
+    def __init__(self, prims, global_data,
+                 env=make_string('rootenv'),
+                 accu=make_int(0)):
         self.prims = prims
         self.global_data = global_data
-        self.env = make_string('rootenv')
         self.extra_args = 0
-        self.accu = make_int(0)
         self.trap_sp = -1
+        self.accu = accu
+        self.env = env
+        self.pending_exception = False
 
-        self._stack = [Val_unit] * 2048
+        self._stack = [Val_unit] * 256
         self._stack_top = 0
 
-    def eval(self, bc):
-        pc = 0
-
+    def eval(self, bc, pc):
         while True:
             jitdriver.jit_merge_point(
                 frame=self, bc=bc, pc=pc)
 
-            #self._stack_top = hint(self._stack_top, promote=True)
+            self._stack_top = hint(self._stack_top, promote=True)
             self.extra_args = hint(self.extra_args, promote=True)
 
             pc = handle_opcode(self, bc, pc)
-            if pc == -1: break
-
             Root.check(self.accu)
+            if pc == -1:
+                break
+
+        if dbg: print 'return from call', self.accu
 
     def push(self, v):
         Root.check(v)
         self._stack[self._stack_top] = v
         self._stack_top += 1
+        self._stack_top = promote(self._stack_top)
 
     def pop(self):
         self._stack_top -= 1
+        self._stack_top = promote(self._stack_top)
+        assert self._stack_top >= 0
         r = self._stack[self._stack_top]
         self._stack[self._stack_top] = Val_unit
         return r
@@ -505,12 +514,31 @@ class Intereter:
     def len(self):
         return self._stack_top
 
+@look_inside
+@unroll_safe
+def handle_raise(self, bc, pc):
+    if self.trap_sp == -1:
+        self.pending_exception = True
+        return -1
+
+    assert self.trap_sp <= self.len(), (self.trap_sp, self.len())
+    while self.len() > self.trap_sp:
+        self.pop()
+
+    pc = to_int(self.pop())
+    self.trap_sp = to_int(self.pop())
+    self.env = self.pop()
+    self.extra_args = to_int(self.pop())
+    return pc
+
 #@always_inline
 @look_inside
 @unroll_safe
 def handle_opcode(self, bc, pc):
         instr = bc[pc]
         accu = self.accu
+
+        if dbg: print pc, 'instr', opcode_list[instr], 'stack_size', self.len()
         pc += 1
 
         def unsupp():
@@ -605,46 +633,84 @@ def handle_opcode(self, bc, pc):
             self.push(make_int(pc + bc[pc]))
             pc += 1
         elif instr == OP_APPLY:
-            self.extra_args = bc[pc]-1
-            trace_call(accu, None)
-            pc = code_val(accu)
-            self.env = accu
+            argc = bc[pc]
+
+            frame = Frame(prims=self.prims,
+                          env=accu,
+                          accu=accu,
+                          global_data=self.global_data)
+
+            for i in range(argc):
+                frame.push(self.sp(argc - 1 - i))
+
+            for i in range(argc):
+                self.pop()
+
+            # from OP_PUSH_RETADDR
+            pc = to_pc(self.pop())
+            self.pop() # env
+            self.pop() # extra_args
+
+            new_pc = code_val(accu)
+
+            frame.extra_args = argc - 1
+            frame.eval(bc, new_pc)
+            if frame.pending_exception:
+                self.accu = frame.accu
+                return handle_raise(self, bc, pc)
+            accu = frame.accu
+
         elif instr == OP_APPLY1:
             arg1 = self.pop()
-            self.push(make_int(self.extra_args))
-            self.push(self.env)
-            self.push(make_int(pc))
-            self.push(arg1)
-            trace_call(accu, [arg1])
-            pc = code_val(accu)
-            self.env = accu
-            self.extra_args = 0
+            frame = Frame(prims=self.prims,
+                          env=accu,
+                          accu=accu,
+                          global_data=self.global_data)
+
+            new_pc = code_val(accu)
+            frame.push(arg1)
+            frame.extra_args = 0
+            frame.eval(bc, new_pc)
+            if frame.pending_exception:
+                self.accu = frame.accu
+                return handle_raise(self, bc, pc)
+            accu = frame.accu
         elif instr == OP_APPLY2:
             arg1 = self.pop()
             arg2 = self.pop()
-            trace_call(accu, [arg1, arg2])
-            self.push(make_int(self.extra_args))
-            self.push(self.env)
-            self.push(make_int(pc))
-            self.push(arg2)
-            self.push(arg1)
-            pc = code_val(accu)
-            self.env = accu
-            self.extra_args = 1
+            frame = Frame(prims=self.prims,
+                          env=accu,
+                          accu=accu,
+                          global_data=self.global_data)
+
+            new_pc = code_val(accu)
+            frame.push(arg2)
+            frame.push(arg1)
+            frame.extra_args = 1
+            frame.eval(bc, new_pc)
+            if frame.pending_exception:
+                self.accu = frame.accu
+                return handle_raise(self, bc, pc)
+            accu = frame.accu
         elif instr == OP_APPLY3:
             arg1 = self.pop()
             arg2 = self.pop()
             arg3 = self.pop()
-            trace_call(accu, [arg1, arg2, arg3])
-            self.push(make_int(self.extra_args))
-            self.push(self.env)
-            self.push(make_int(pc))
-            self.push(arg3)
-            self.push(arg2)
-            self.push(arg1)
-            pc = code_val(accu)
-            self.env = accu
-            self.extra_args = 2
+            frame = Frame(prims=self.prims,
+                          env=accu,
+                          accu=accu,
+                          global_data=self.global_data)
+
+            new_pc = code_val(accu)
+            frame.push(arg3)
+            frame.push(arg2)
+            frame.push(arg1)
+            frame.extra_args = 2
+            frame.eval(bc, new_pc)
+            if frame.pending_exception:
+                self.accu = frame.accu
+                return handle_raise(self, bc, pc)
+            accu = frame.accu
         elif instr == OP_APPTERM:
             nargs = bc[pc]
             pc += 1
@@ -702,11 +768,15 @@ def handle_opcode(self, bc, pc):
                 pc = code_val(accu)
                 self.env = accu
             else:
+                if self.len() == 0:
+                    self.accu = accu
+                    return -1
+
                 pc = to_pc(self.pop())
                 self.env = self.pop()
                 self.extra_args = to_int(self.pop())
         elif instr == OP_RESTART:
-            num_args = len(self.env._fields) - 2
+            num_args = self.env.len_fields() - 2
             assert num_args >= 0, self.env
             for i in range(num_args):
                 self.push(self.env.field((num_args - i - 1) + 2))
@@ -719,12 +789,17 @@ def handle_opcode(self, bc, pc):
                 self.extra_args -= required
             else:
                 num_args = 1 + self.extra_args
-                # print(stack, num_args)
+                #print 'GRAB', num_args, ' ', self.extra_args, '->',pc - 3
                 accu = make_block(num_args + 2, Closure_tag)
                 accu.set_field(1, self.env)
                 for i in range(num_args):
                     accu.set_field(i + 2, self.pop())
                 set_code_val(accu, pc - 3)
+
+                if self.len() == 0:
+                    self.accu = accu
+                    return -1
+
                 pc = to_pc(self.pop())
                 self.env = self.pop()
                 self.extra_args = to_int(self.pop())
@@ -759,10 +834,12 @@ def handle_opcode(self, bc, pc):
 
             set_code_val(accu, pc + bc[pc])
             self.push(accu)
+            assert isinstance(accu, Block)
             accu._envoffsettop = accu
             accu._envoffsetdelta = 0
             for i in range(1, nfuncs):
                 b = make_block(1, Infix_tag)
+                assert isinstance(b, Block)
                 b._envoffsettop = accu
                 b._envoffsetdelta = i * 2
                 b.set_field(0, make_int(pc + bc[pc + i]))
@@ -921,7 +998,7 @@ def handle_opcode(self, bc, pc):
             accu.set_field(n, self.pop())
             accu = Val_unit
         elif instr == OP_VECTLENGTH:
-            accu = make_int(len(accu._fields))
+            accu = make_int(accu.len_fields())
         elif instr == OP_GETVECTITEM:
             unsupp()
         elif instr == OP_SETVECTITEM:
@@ -969,17 +1046,7 @@ def handle_opcode(self, bc, pc):
             assert self.trap_sp <= self.len()
             for _ in range(4): self.pop()
         elif instr == OP_RAISE:
-            if self.trap_sp == -1:
-                raise Exception('terminated with exception %s' % accu)
-
-            assert self.trap_sp <= self.len(), (self.trap_sp, self.len())
-            while self.len() > self.trap_sp:
-                self.pop()
-
-            pc = to_int(self.pop())
-            self.trap_sp = to_int(self.pop())
-            self.env = self.pop()
-            self.extra_args = to_int(self.pop())
+            return handle_raise(self, bc, pc)
         elif instr == OP_CHECK_SIGNALS:
             pass
         elif instr == OP_C_CALL1:
@@ -1062,7 +1129,7 @@ def handle_opcode(self, bc, pc):
         elif instr == OP_LSLINT:
             accu = make_int(to_int(accu) << to_int(self.pop()))
         elif instr == OP_LSRINT:
-            accu = make_int(to_uint(accu) >> to_int(self.pop())) # TODO: logical shift
+            accu = make_int_from_uint(to_uint(accu) >> to_int(self.pop())) # TODO: logical shift
         elif instr == OP_ASRINT:
             accu = make_int(intmask(to_int(accu) >> to_int(self.pop())))
         elif instr == OP_EQ:
@@ -1143,6 +1210,7 @@ def handle_opcode(self, bc, pc):
         elif instr == OP_GETDYNMET:
             unsupp()
         elif instr == OP_STOP:
+            self.accu = accu
             return -1
         elif instr == OP_EVENT:
             unsupp()
@@ -1177,9 +1245,9 @@ def entry_point(argv):
     exe_dict = parse_executable(open(argv[1], 'rb').read())
     bytecode = make_int_array(exe_dict['CODE'])
     prims = Prims(exe_dict['PRIM'].split('\0'), argv)
-    global_data = unmarshal(exe_dict['DATA'])._fields
+    global_data = unmarshal(exe_dict['DATA']).get_fields()
 
-    Intereter(prims, global_data).eval(bytecode)
+    Frame(prims, global_data).eval(bytecode, pc=0)
     return 0
 
 def jitpolicy(driver):

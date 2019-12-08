@@ -1,4 +1,5 @@
 from rpython.rlib.rarithmetic import r_uint, intmask
+from rpython.rlib.objectmodel import UnboxedValue
 
 Closure_tag = 247
 Object_tag = 248
@@ -11,6 +12,8 @@ class Root(object):
         assert isinstance(x, Root), x
 
 class Int64(Root):
+    _immutable_ = True
+
     def __init__(self, i):
         self.i = i
 
@@ -25,7 +28,7 @@ class Int64(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Int64)
-        return cmp(self.i, other.i)
+        return cmp_i(self.i, other.i)
 
 def int32_signed_mul(a, b):
     if a >= 2**31: a -= 2**32
@@ -47,6 +50,8 @@ def int32_signed_rshift(a, b):
     return a >> b
 
 class Int32(Root):
+    _immutable_ = True
+
     def __init__(self, i):
         self.i = i & 0xFFFFFFFF
 
@@ -61,7 +66,7 @@ class Int32(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Int32)
-        return cmp(self.i, other.i)
+        return cmp_i(self.i, other.i)
 
 class Block(Root):
     def __init__(self, tag, size):
@@ -79,6 +84,15 @@ class Block(Root):
         Root.check(v)
         assert i >= 0
         self._fields[i] = v
+
+    def get_fields(self):
+        return self._fields
+
+    def len_fields(self):
+        return len(self._fields)
+
+    def get_tag(self):
+        return self._tag
 
     def __repr__(self):
         return 'Block(%d, %s)' % (self._tag, self._fields)
@@ -104,14 +118,14 @@ class Block(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Block)
-        if self._tag != other._tag:
-            return cmp(self._tag, other._tag)
+        if self._tag != other.get_tag():
+            return cmp_i(self._tag, other.get_tag())
         else:
-            for i in range(min(len(self._fields), len(other._fields))):
-                d = cmp(self._fields[i], other._fields[i])
+            for i in range(min(len(self._fields), len(other.get_fields()))):
+                d = poly_compare(self._fields[i], other.get_fields()[i])
                 if d != 0: return d
 
-            return cmp(len(self._fields), len(other._fields))
+            return cmp_i(len(self._fields), other.len_fields())
 
 def is_block(x):
     return isinstance(x, Block)
@@ -121,7 +135,7 @@ def make_block(size, tag):
     return b
 
 def block_tag(block):
-    return block._tag
+    return block.get_tag()
 
 def is_true(a):
     if isinstance(a, Int):
@@ -140,10 +154,15 @@ def make_int(a):
     assert isinstance(a, int) or isinstance(a, long), a
     return Int(a)
 
+def make_int_from_uint(a):
+    return Int(intmask(a))
+
 def make_bool(a):
     return Int(1 if a else 0)
 
 class Float(Root):
+    _immutable_ = True
+
     def __init__(self, f):
         self.f = f
 
@@ -155,7 +174,7 @@ class Float(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Float)
-        return cmp(self.f, other.f)
+        return cmp_f(self.f, other.f)
 
 class String(Root):
     def __init__(self, s):
@@ -178,7 +197,7 @@ class String(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, String)
-        return cmp(self.s, other.s)
+        return cmp_s(self.s, other.s)
 
 class Bytes(Root):
     def __init__(self, s):
@@ -201,9 +220,12 @@ class Bytes(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Bytes)
-        return cmp(self.s, other.s)
+        return cmp_s(self.s, other.s)
 
-class Int(Root):
+class Int(Root):#, UnboxedValue):
+    _immutable_ = True
+    #__slots__ = ('i',)
+
     def __init__(self, i):
         self.i = i
 
@@ -221,7 +243,7 @@ class Int(Root):
 
     def _poly_compare(self, other):
         assert isinstance(other, Int)
-        return cmp(self.i, other.i)
+        return cmp_i(self.i, other.i)
 
 def eq(a, b):
     if isinstance(a, Int) and isinstance(b, Int):
@@ -268,9 +290,24 @@ def to_bytes(data):
 
 def poly_compare(a, b):
     if a.custom_type_id() != b.custom_type_id():
-        return cmp(a.custom_type_id(), b.custom_type_id())
+        return cmp_i(a.custom_type_id(), b.custom_type_id())
     else:
         return a._poly_compare(b)
+
+def cmp_f(a, b):
+    if a == b: return 0
+    if a < b: return -1
+    return 1
+
+def cmp_i(a, b):
+    if a == b: return 0
+    if a < b: return -1
+    return 1
+
+def cmp_s(a, b):
+    if a == b: return 0
+    if a < b: return -1
+    return 1
 
 Val_unit = make_int(0)
 

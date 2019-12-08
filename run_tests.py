@@ -12,8 +12,9 @@ for test in sys.argv[1:]:
         else:
             sys.exit('compilation failed')
 
+    CMD = os.environ.get('CMD', 'pypy bytecode.py').split()
     try:
-        out = subprocess.check_output(['pypy', 'bytecode.py', 'test.byte'])
+        out = subprocess.check_output(CMD + ['test.byte'])
     except Exception:
         if nonstop:
             fail += 1

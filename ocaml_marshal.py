@@ -34,9 +34,10 @@ CODE_CUSTOM_FIXED = 0x19
 trailer_magic = b'Caml1999X'
 
 def parse_executable(data):
-    if len(data) <= 12:
+    l = len(data)-12
+    if l < 0:
         raise Exception('file too short')
-    if not data[len(data)-12:len(data)-3].endswith(trailer_magic):
+    if not data[l:l+9].endswith(trailer_magic):
         raise Exception('invalid magic %s' % data[max(0, len(data)-len(trailer_magic)):])
 
     pos = len(data)
