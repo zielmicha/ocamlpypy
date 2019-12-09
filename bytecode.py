@@ -6,7 +6,7 @@ from ocaml_marshal import unmarshal, parse_executable
 
 from rpython.rlib.objectmodel import always_inline
 from rpython.rlib.rarithmetic import r_uint, intmask
-from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe, promote
+from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, look_inside, unroll_safe, promote, elidable
 
 def trace_call(env, args):
     if dbg:
@@ -28,22 +28,17 @@ class Prims:
     _immutable_ = True
 
     def __init__(self, names, argv):
-        self.names = names
         self.argv = argv
+        self.names = names
 
-    for i in range(1, 6):
-        exec '''
-def call%d(self, index, *args):
-    # TODO: avoid dict lookup
-    name = self.names[index]
-    if dbg:
-        dbg('ccall', name, args)
-    if self.funcs%d:
-       res = self.funcs%d[name](self, *args)
-    else:
-       raise Exception("%%s: no functions of this arity" %% name)
-    Root.check(res)
-    return res''' % (i, i, i)
+        bad_names = []
+        for name in self.names:
+            if name not in self.index_by_name:
+                bad_names.append(name)
+        #if bad_names:
+        #    raise Exception('missing C calls: %s' % bad_names)
+
+        self.index_mapping = [ (self.index_by_name[name] if name in self.index_by_name else -1) for name in names ]
 
     def caml_register_named_value(self, vname, val):
         # print('named:', vname, val)
@@ -60,6 +55,27 @@ def call%d(self, index, *args):
 
     def caml_int64_float_of_bits(self, _):
         return make_float(0.666) # TODO
+
+    def caml_int64_shift_left(self, a, b):
+        assert isinstance(a, Int64)
+        return Int64(a.i << to_int(b))
+
+    def caml_int64_neg(self, a):
+        assert isinstance(a, Int64)
+        return Int64(-a.i)
+
+    def caml_int64_sub(self, a, b):
+        assert isinstance(a, Int64)
+        assert isinstance(b, Int64)
+        return Int64(a.i-b.i)
+
+    def caml_int64_add(self, a, b):
+        assert isinstance(a, Int64)
+        assert isinstance(b, Int64)
+        return Int64(a.i+b.i)
+
+    def caml_sys_isatty(self, channel):
+        return make_bool(False) # TODO
 
     def caml_ml_open_descriptor_in(self, _):
         return String('_stdin')
@@ -113,6 +129,14 @@ def call%d(self, index, *args):
         assert isinstance(s, String)
         return s.copy()
 
+    def caml_bytes_of_string(self, s):
+        assert isinstance(s, String)
+        return s.copy()
+
+    def caml_string_get(self, s, i):
+        assert isinstance(s, String)
+        return make_int(s.get_at(to_int(i)))
+
     def caml_create_bytes(self, length):
         # return make_bytes(bytearray(to_int(length)))
         return make_string('\0' * to_int(length))
@@ -127,6 +151,9 @@ def call%d(self, index, *args):
 
     def caml_sys_executable_name(self, _):
         return make_string("ocamlpypy")
+
+    def caml_sys_file_exists(self, name):
+        return make_bool(os.path.exists(to_str(name)))
 
     def caml_sys_getenv(self, name):
         return make_string(os.environ.get(to_str(name)) or '')
@@ -181,7 +208,7 @@ def call%d(self, index, *args):
     def format_int(self, fmt, n):
         fmt_s = to_str(fmt)
         # TODO
-        if fmt_s == '%d':
+        if fmt_s in ('%d', '%i'):
             return make_string('%d' % n)
         elif fmt_s == '0x%X':
             return make_string('0x%x' % n)
@@ -242,16 +269,15 @@ def call%d(self, index, *args):
         return Val_unit
 
     def caml_fill_bytes(self, s, offset_, len_, init_):
-        #offset = to_int(offset_)
-        #len = to_int(offset_)
-        #init = to_int(init_)
-        #assert offset >= 0
-        #assert len >= 0
-        #assert isinstance(s, Bytes)
-        #for i in range(offset, offset + len):
-        #    s.s[i] = init
-        #return Val_unit
-        raise Exception('unsupp')
+        offset = to_int(offset_)
+        len = to_int(offset_)
+        init = to_int(init_)
+        assert offset >= 0
+        assert len >= 0
+        assert isinstance(s, String)
+        for i in range(offset, offset + len):
+            s.set_at(i, init)
+        return Val_unit
 
     def caml_string_equal(self, a, b):
         return make_bool(poly_compare(a, b) == 0)
@@ -478,6 +504,9 @@ def call%d(self, index, *args):
     def caml_eq_float(self, a, b):
         return make_bool(to_float(a) == to_float(b))
 
+    def caml_abs_float(self, a):
+        return make_float(abs(to_float(a)))
+
     def caml_gc_full_major(self, _):
         return Val_unit
 
@@ -486,10 +515,31 @@ def call%d(self, index, *args):
     funcs3 = {}
     funcs4 = {}
     funcs5 = {}
+    index_by_name = {}
+    _i = 0
     for _k, _v in locals().items():
         if _k.startswith('caml_'):
             _cnt = _v.func_code.co_argcount-1
-            locals()['funcs%d' % _cnt][_k] = _v
+            locals()['funcs%d' % _cnt][_i] = _k
+            locals()['index_by_name'][_k] = _i
+            _i += 1
+
+    for i in range(1, 6):
+        exec '''
+def call%d(self, bcindex, *args):
+    if self.index_mapping[bcindex] == -1:
+        raise Exception("missing C function %%s" %% self.names[bcindex])
+    index = promote(self.index_mapping[bcindex])
+    if False:
+        res = Val_unit
+    %s
+    else:
+        raise Exception("invalid c_call")
+    Root.check(res)
+    return res''' % (
+        i,
+        ''.join([ 'elif index == %d: res = self.%s(*args)\n    ' % (_index, _name) for _index, _name in locals()['funcs%d' % i].items() ])
+    )
 
 def set_code_val(block, pc):
     block.set_field(0, make_int(pc & 0xFFFFFFFF))
@@ -528,7 +578,7 @@ class Frame:
         self.env = env
         self.pending_exception = False
 
-        self._stack = [None] * 256
+        self._stack = [None] * 1024
         self._stack_top = r_uint(0)
 
     def eval(self, bc, pc):
@@ -924,7 +974,8 @@ class Frame:
             pc += 1
             accu = offset_field(self.env, n) # offset_field
         elif instr == OP_PUSHOFFSETCLOSUREM2:
-            unsupp()
+            self.push(accu)
+            accu = offset_field(self.env, -2) # offset_field
         elif instr == OP_PUSHOFFSETCLOSURE0:
             self.push(accu)
             accu = self.env
@@ -1068,11 +1119,18 @@ class Frame:
         elif instr == OP_GETVECTITEM:
             unsupp()
         elif instr == OP_SETVECTITEM:
-            unsupp()
+            ind = self.pop()
+            val = self.pop()
+            accu.set_field(to_int(ind), val)
+            accu = Val_unit
         elif instr == OP_GETBYTESCHAR:
-            unsupp()
+            ind = self.pop()
+            accu = make_int(accu.get_at(to_int(ind)))
         elif instr == OP_SETBYTESCHAR:
-            unsupp()
+            ind = self.pop()
+            val = self.pop()
+            accu.set_at(to_int(ind), to_int(val))
+            accu = Val_unit
         elif instr == OP_BRANCH:
             pc += bc[pc]
         elif instr == OP_BRANCHIF:
@@ -1270,7 +1328,12 @@ class Frame:
         elif instr == OP_BULTINT:
             unsupp()
         elif instr == OP_BUGEINT:
-            unsupp()
+            n = bc[pc]
+            pc += 1
+            if r_uint(n) >= to_uint(accu):
+                pc += bc[pc]
+            else:
+                pc += 1
         elif instr == OP_GETPUBMET:
             unsupp()
         elif instr == OP_GETDYNMET:
@@ -1287,7 +1350,8 @@ class Frame:
         elif instr == OP_RAISE_NOTRACE:
             unsupp()
         elif instr == OP_GETSTRINGCHAR:
-            unsupp()
+            ind = self.pop()
+            accu = make_int(accu.get_at(to_int(ind)))
         else:
             raise Exception('invalid opcode %d' % instr)
 

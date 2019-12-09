@@ -120,7 +120,7 @@ class Block(Root):
     def __init__(self, tag, size):
         assert isinstance(tag, int)
         self._tag = tag
-        self._fields = [None]*size
+        self._fields = [Val_unit]*size
 
     def offset_field(self, n):
         return self.field(n)
