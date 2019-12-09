@@ -501,12 +501,7 @@ def to_pc(x):
     return to_int(x) & 0xFFFFFFFF
 
 def offset_field(v, n):
-    assert isinstance(v, Block)
-    f = n + v._envoffsetdelta
-    if f == 0:
-        return v._envoffsettop
-    else:
-        return v._envoffsettop.field(f)
+    return v.offset_field(n)
 
 def get_printable_location(pc, bc):
     return '%d(%s)' % (pc, opcode_list[bc[pc]])
@@ -910,13 +905,8 @@ class Frame:
             set_code_val(accu, pc + bc[pc])
             self.push(accu)
             assert isinstance(accu, Block)
-            accu._envoffsettop = accu
-            accu._envoffsetdelta = 0
             for i in range(1, nfuncs):
-                b = make_block(1, Infix_tag)
-                assert isinstance(b, Block)
-                b._envoffsettop = accu
-                b._envoffsetdelta = i * 2
+                b = InfixBlock(accu, i * 2)
                 b.set_field(0, make_int(pc + bc[pc + i]))
                 self.push(b)
                 accu.set_field(i * 2, b)

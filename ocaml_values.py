@@ -7,12 +7,14 @@ Infix_tag = 249
 String_tag = 252
 
 class Root(object):
+    __slots__ = ()
     @staticmethod
     def check(x):
         assert isinstance(x, Root), x
 
 class Int64(Root):
     _immutable_ = True
+    __slots__ = ('i',)
 
     def __init__(self, i):
         self.i = i
@@ -50,6 +52,7 @@ def int32_signed_rshift(a, b):
     return a >> b
 
 class Int32(Root):
+    __slots__ = ('i',)
     _immutable_ = True
 
     def __init__(self, i):
@@ -68,20 +71,62 @@ class Int32(Root):
         assert isinstance(other, Int32)
         return cmp_i(self.i, other.i)
 
+class InfixBlock(Root):
+    __slots__ = ('_field', '_envoffsettop', '_envoffsetdelta')
+    def __init__(self, top, delta):
+        self._field = None
+        self._envoffsettop = top
+        self._envoffsetdelta = delta
+
+    def get_tag(self):
+        return Infix_tag
+
+    def field(self, i):
+        assert i >= 0
+        if i == 0:
+            return self._field
+        else:
+            return self._envoffsettop.field(self._envoffsetdelta + i) # TODO: doesn't seem right!
+
+    def set_field(self, i, v):
+        Root.check(v)
+        assert i == 0
+        self._field = v
+
+    def get_fields(self):
+        return [self._field]
+
+    def len_fields(self):
+        return 1
+
+    def hash(self):
+        return self._field.hash()
+
+    def custom_type_id(self):
+        return 8
+
+    def _poly_compare(self, other):
+        assert isinstance(other, InfixBlock)
+        return poly_compare(self._field, other._field)
+
+    def offset_field(self, n):
+        f = n + self._envoffsetdelta
+        if f == 0:
+            return self._envoffsettop
+        else:
+            return self._envoffsettop.field(f)
+
 class Block(Root):
-    # TODO: introduce a different type for Infix_block
     def __init__(self, tag, size):
         assert isinstance(tag, int)
         self._tag = tag
         self._fields = [None]*size
-        self._envoffsettop = Val_unit
-        self._envoffsetdelta = -1
+
+    def offset_field(self, n):
+        return self.field(n)
 
     def field(self, i):
         assert i >= 0
-        if i >= len(self._fields):
-            return self._envoffsettop.field(self._envoffsetdelta + i)
-
         return self._fields[i]
 
     def set_field(self, i, v):
@@ -111,7 +156,7 @@ class Block(Root):
         i *= 31
         i &= 0xFFFFFFFF
         for f in self._fields:
-            i+= f.hash()
+            i += f.hash()
             i &= 0xFFFFFFFF
             i *= 31
             i &= 0xFFFFFFFF
@@ -166,6 +211,7 @@ def make_bool(a):
 
 class Float(Root):
     _immutable_ = True
+    __slots__ = ('f',)
 
     def __init__(self, f):
         self.f = f
@@ -181,6 +227,7 @@ class Float(Root):
         return cmp_f(self.f, other.f)
 
 class String(Root):
+    __slots__ = ('data',)
     def __init__(self, s):
         # TODO: use RawBuffer
         self.data = [0]*len(s)
@@ -222,9 +269,9 @@ class String(Root):
         assert isinstance(other, String)
         return cmp_s(self.data, other.data)
 
-class Int(Root):#, UnboxedValue):
+class Int(Root):
     _immutable_ = True
-    #__slots__ = ('i',)
+    __slots__ = ('i',)
 
     def __init__(self, i):
         self.i = i

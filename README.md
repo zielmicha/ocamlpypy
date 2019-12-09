@@ -2,7 +2,7 @@
 
 ocamlpypy is a fast JIT compiler for Ocaml bytecode that uses PyPy metatracing JIT compiler.
 
-It is currently much faster than ocamlrun, and faster than ocamlopt on some testcases (!), but there is still a lot to improve.
+It is currently much faster than ocamlrun, and faster than ocamlopt on some tests (!), but there is still a lot to improve.
 
 ## Building and running
 
