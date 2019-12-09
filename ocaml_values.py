@@ -69,6 +69,7 @@ class Int32(Root):
         return cmp_i(self.i, other.i)
 
 class Block(Root):
+    # TODO: introduce a different type for Infix_block
     def __init__(self, tag, size):
         assert isinstance(tag, int)
         self._tag = tag
@@ -78,6 +79,9 @@ class Block(Root):
 
     def field(self, i):
         assert i >= 0
+        if i >= len(self._fields):
+            return self._envoffsettop.field(self._envoffsetdelta + i)
+
         return self._fields[i]
 
     def set_field(self, i, v):
@@ -178,49 +182,45 @@ class Float(Root):
 
 class String(Root):
     def __init__(self, s):
-        self.s = s
+        # TODO: use RawBuffer
+        self.data = [0]*len(s)
+        for i in range(len(s)):
+            self.data[i] = ord(s[i])
 
     def __repr__(self):
-        return 'String(%s)' % self.s
+        return 'String(%s)' % self.to_str()
+
+    def to_str(self):
+        return ''.join([ chr(i) for i in self.data ])
+
+    def len(self):
+        return len(self.data)
+
+    def set_at(self, index, val):
+        assert val >= 0 and val < 256, val
+        self.data[index] = val
+
+    def get_at(self, index):
+        return self.data[index]
 
     def hash(self):
         i = 0
-        for ch in self.s:
-            i += ord(ch)
+        for ch in self.data:
+            i += ch
             i &= 0xFFFFFFFF
             i *= 31
             i &= 0xFFFFFFFF
         return i
+
+    def copy(self):
+        return String(self.to_str())
 
     def custom_type_id(self):
         return 6
 
     def _poly_compare(self, other):
         assert isinstance(other, String)
-        return cmp_s(self.s, other.s)
-
-class Bytes(Root):
-    def __init__(self, s):
-        self.s = s
-
-    def __repr__(self):
-        return 'Bytes(...)'
-
-    def hash(self):
-        i = 0
-        for ch in self.s:
-            i += ord(ch)
-            i &= 0xFFFFFFFF
-            i *= 31
-            i &= 0xFFFFFFFF
-        return i
-
-    def custom_type_id(self):
-        return 5
-
-    def _poly_compare(self, other):
-        assert isinstance(other, Bytes)
-        return cmp_s(self.s, other.s)
+        return cmp_s(self.data, other.data)
 
 class Int(Root):#, UnboxedValue):
     _immutable_ = True
@@ -277,7 +277,7 @@ def make_string(data):
 
 def to_str(data):
     assert isinstance(data, String)
-    return data.s
+    return data.to_str()
 
 def make_bytes(data):
     # assert isinstance(data, bytearray)
@@ -285,8 +285,8 @@ def make_bytes(data):
     raise Exception('make_bytes')
 
 def to_bytes(data):
-    assert isinstance(data, Bytes)
-    return data.s
+    assert isinstance(data, String)
+    return data.to_str()
 
 def poly_compare(a, b):
     if a.custom_type_id() != b.custom_type_id():
@@ -305,9 +305,20 @@ def cmp_i(a, b):
     return 1
 
 def cmp_s(a, b):
-    if a == b: return 0
-    if a < b: return -1
-    return 1
+    for i in range(min(len(a), len(b))):
+        if a[i] < b[i]:
+            return -1
+        if a[i] > b[i]:
+            return 1
+
+    return cmp_i(len(a), len(b))
+
+if True:
+    def _test_cmp(a, b): assert cmp_s(a,b)==cmp(a,b)
+    _test_cmp("", "foo")
+    _test_cmp("foo", "foo")
+    _test_cmp("aoo", "foo")
+    _test_cmp("a", "aaa")
 
 Val_unit = make_int(0)
 

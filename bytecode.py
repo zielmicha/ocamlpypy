@@ -1,5 +1,5 @@
 #from __future__ import print_function
-import struct, sys, array, StringIO, os
+import struct, sys, array, StringIO, os, math
 import colorama
 from ocaml_values import *
 from ocaml_marshal import unmarshal, parse_executable
@@ -10,7 +10,8 @@ from rpython.rlib.jit import JitDriver, hint, we_are_jitted, dont_look_inside, l
 
 def trace_call(env, args):
     if dbg:
-        dbg('call', code_val(env), args)
+        dbg('call', code_val(env), 'args:', args)
+        #dbg('env', env)
 
 opcode_list = [ 'OP_ACC0', 'OP_ACC1', 'OP_ACC2', 'OP_ACC3', 'OP_ACC4', 'OP_ACC5', 'OP_ACC6', 'OP_ACC7', 'OP_ACC', 'OP_PUSH', 'OP_PUSHACC0', 'OP_PUSHACC1', 'OP_PUSHACC2', 'OP_PUSHACC3', 'OP_PUSHACC4', 'OP_PUSHACC5', 'OP_PUSHACC6', 'OP_PUSHACC7', 'OP_PUSHACC', 'OP_POP', 'OP_ASSIGN', 'OP_ENVACC1', 'OP_ENVACC2', 'OP_ENVACC3', 'OP_ENVACC4', 'OP_ENVACC', 'OP_PUSHENVACC1', 'OP_PUSHENVACC2', 'OP_PUSHENVACC3', 'OP_PUSHENVACC4', 'OP_PUSHENVACC', 'OP_PUSH_RETADDR', 'OP_APPLY', 'OP_APPLY1', 'OP_APPLY2', 'OP_APPLY3', 'OP_APPTERM', 'OP_APPTERM1', 'OP_APPTERM2', 'OP_APPTERM3', 'OP_RETURN', 'OP_RESTART', 'OP_GRAB', 'OP_CLOSURE', 'OP_CLOSUREREC', 'OP_OFFSETCLOSUREM2', 'OP_OFFSETCLOSURE0', 'OP_OFFSETCLOSURE2', 'OP_OFFSETCLOSURE', 'OP_PUSHOFFSETCLOSUREM2', 'OP_PUSHOFFSETCLOSURE0', 'OP_PUSHOFFSETCLOSURE2', 'OP_PUSHOFFSETCLOSURE', 'OP_GETGLOBAL', 'OP_PUSHGETGLOBAL', 'OP_GETGLOBALFIELD', 'OP_PUSHGETGLOBALFIELD', 'OP_SETGLOBAL', 'OP_ATOM0', 'OP_ATOM', 'OP_PUSHATOM0', 'OP_PUSHATOM', 'OP_MAKEBLOCK', 'OP_MAKEBLOCK1', 'OP_MAKEBLOCK2', 'OP_MAKEBLOCK3', 'OP_MAKEFLOATBLOCK', 'OP_GETFIELD0', 'OP_GETFIELD1', 'OP_GETFIELD2', 'OP_GETFIELD3', 'OP_GETFIELD', 'OP_GETFLOATFIELD', 'OP_SETFIELD0', 'OP_SETFIELD1', 'OP_SETFIELD2', 'OP_SETFIELD3', 'OP_SETFIELD', 'OP_SETFLOATFIELD', 'OP_VECTLENGTH', 'OP_GETVECTITEM', 'OP_SETVECTITEM', 'OP_GETBYTESCHAR', 'OP_SETBYTESCHAR', 'OP_BRANCH', 'OP_BRANCHIF', 'OP_BRANCHIFNOT', 'OP_SWITCH', 'OP_BOOLNOT', 'OP_PUSHTRAP', 'OP_POPTRAP', 'OP_RAISE', 'OP_CHECK_SIGNALS', 'OP_C_CALL1', 'OP_C_CALL2', 'OP_C_CALL3', 'OP_C_CALL4', 'OP_C_CALL5', 'OP_C_CALLN', 'OP_CONST0', 'OP_CONST1', 'OP_CONST2', 'OP_CONST3', 'OP_CONSTINT', 'OP_PUSHCONST0', 'OP_PUSHCONST1', 'OP_PUSHCONST2', 'OP_PUSHCONST3', 'OP_PUSHCONSTINT', 'OP_NEGINT', 'OP_ADDINT', 'OP_SUBINT', 'OP_MULINT', 'OP_DIVINT', 'OP_MODINT', 'OP_ANDINT', 'OP_ORINT', 'OP_XORINT', 'OP_LSLINT', 'OP_LSRINT', 'OP_ASRINT', 'OP_EQ', 'OP_NEQ', 'OP_LTINT', 'OP_LEINT', 'OP_GTINT', 'OP_GEINT', 'OP_OFFSETINT', 'OP_OFFSETREF', 'OP_ISINT', 'OP_GETMETHOD', 'OP_BEQ', 'OP_BNEQ', 'OP_BLTINT', 'OP_BLEINT', 'OP_BGTINT', 'OP_BGEINT', 'OP_ULTINT', 'OP_UGEINT', 'OP_BULTINT', 'OP_BUGEINT', 'OP_GETPUBMET', 'OP_GETDYNMET', 'OP_STOP', 'OP_EVENT', 'OP_BREAK', 'OP_RERAISE', 'OP_RAISE_NOTRACE', 'OP_GETSTRINGCHAR' ]
 
@@ -78,14 +79,51 @@ def call%d(self, index, *args):
     def caml_ml_flush(self, channel):
         return make_int(0)
 
+    def caml_ml_bytes_length(self, s):
+        assert isinstance(s, String)
+        return make_int(s.len())
+
+    def caml_bytes_set(self, s, index, newval):
+        assert isinstance(s, String)
+        s.set_at(to_int(index), to_int(newval))
+        return Val_unit
+
+    def caml_blit_string(self, s1, ofs1_, s2, ofs2_, n_):
+        ofs1 = to_int(ofs1_)
+        ofs2 = to_int(ofs2_)
+        n = to_int(n_)
+        assert isinstance(s1, String)
+        assert isinstance(s2, String)
+
+        assert s1 is not s2, "TODO"
+        #if s1 is s2 and ofs2 > ofs1:
+        #    for i_ in range(n):
+        #        i = n_ - 1 - i_
+        #        s2.set_at(ofs2 + i, s1.get_at(ofs1 + i))
+        #else:
+        for i in range(n):
+            s2.set_at(ofs2 + i, s1.get_at(ofs1 + i))
+
+        return Val_unit
+
+    def caml_blit_bytes(self, s1, ofs1_, s2, ofs2_, n_):
+        return self.caml_blit_string(s1, ofs1_, s2, ofs2_, n_)
+
+    def caml_string_of_bytes(self, s):
+        assert isinstance(s, String)
+        return s.copy()
+
     def caml_create_bytes(self, length):
         # return make_bytes(bytearray(to_int(length)))
         return make_string('\0' * to_int(length))
 
     def caml_sys_get_argv(self, _):
-        return make_array([make_string("ocamlpypy"), make_array([make_string('ocamlpypy')] + [
+        return make_array([make_string("ocamlpypy"), self.caml_sys_argv(_)])
+
+    def caml_sys_argv(self, _):
+        return make_array([make_string('ocamlpypy')] + [
             make_string(arg) for arg in self.argv
-        ])])
+        ])
 
     def caml_sys_executable_name(self, _):
         return make_string("ocamlpypy")
@@ -152,6 +190,17 @@ def call%d(self, index, *args):
 
     def caml_format_int(self, fmt, n_):
         return self.format_int(fmt, to_int(n_))
+
+    def caml_format_float(self, fmt, f_):
+        f = to_float(f_)
+        fmt_s = to_str(fmt)
+        # TODO
+        if fmt_s == '%.0f':
+            return make_string('%f' % f)
+        if fmt_s == '%.9f':
+            return make_string('%f' % f)
+        else:
+            raise Exception('unknown format %s' % fmt_s)
 
     def caml_int32_format(self, fmt, n_):
         assert isinstance(n_, Int32)
@@ -365,6 +414,12 @@ def call%d(self, index, *args):
     def caml_float_of_int(self, n):
         return make_float(float(to_int(n)))
 
+    def caml_add_float(self, a, b):
+        return make_float(to_float(a) + to_float(b))
+
+    def caml_sqrt_float(self, a):
+        return make_float(math.sqrt(to_float(a)))
+
     def caml_array_sub(self, a, ofs_, len_):
         ofs = to_int(ofs_)
         len = to_int(len_)
@@ -377,6 +432,13 @@ def call%d(self, index, *args):
 
     def caml_hash(self, count, limit, seed, obj):
         return make_int(obj.hash()) # TODO
+
+    def caml_floatarray_get(self, array, index):
+        return array.field(to_int(index))
+
+    def caml_floatarray_set(self, array, index, val):
+        array.set_field(to_int(index), val)
+        return Val_unit
 
     def caml_array_get_addr(self, array, index):
         return array.field(to_int(index))
@@ -471,10 +533,11 @@ class Frame:
         self.env = env
         self.pending_exception = False
 
-        self._stack = [Val_unit] * 256
+        self._stack = [None] * 256
         self._stack_top = r_uint(0)
 
     def eval(self, bc, pc):
+        if dbg: print 'frame started at', pc, 'stack', self.len()
         while True:
             jitdriver.jit_merge_point(
                 frame=self, bc=bc, pc=pc)
@@ -547,6 +610,7 @@ class Frame:
         accu = self.accu
 
         if dbg: print pc, 'instr', opcode_list[instr], 'stack_size', self.len()
+        #if dbg: print self._stack[:self._stack_top]
         pc += 1
 
         def unsupp():
@@ -733,7 +797,7 @@ class Frame:
                 self.sp_swap(newsp + i, i)
                 i -= 1
             for _ in range(newsp): self.pop()
-            trace_call(accu, None)
+            if dbg: trace_call(accu, [ self.sp(i) for i in range(nargs) ])
             pc = code_val(accu)
             self.env = accu
             self.extra_args += nargs - 1
@@ -741,6 +805,7 @@ class Frame:
             arg1 = self.sp(0)
             trace_call(accu, [arg1])
             for _ in range(bc[pc]): self.pop()
+            if dbg: dbg('stack', self._stack[:self._stack_top], self.extra_args)
             self.push(arg1)
             pc = code_val(accu)
             self.env = accu
@@ -749,6 +814,7 @@ class Frame:
             arg2 = self.sp(1)
             trace_call(accu, [arg1, arg2])
             for _ in range(bc[pc]): self.pop()
+            if dbg: dbg('stack', self._stack[:self._stack_top], self.extra_args)
             self.push(arg2)
             self.push(arg1)
             pc = code_val(accu)
@@ -760,6 +826,7 @@ class Frame:
             arg3 = self.sp(2)
             trace_call(accu, [arg1, arg2, arg3])
             for _ in range(bc[pc]): self.pop()
+            if dbg: dbg('stack', self._stack[:self._stack_top], self.extra_args)
             self.push(arg3)
             self.push(arg2)
             self.push(arg1)
@@ -877,6 +944,7 @@ class Frame:
         elif instr == OP_PUSHOFFSETCLOSURE:
             self.push(accu)
             n = bc[pc]
+            if dbg: dbg('offsetclosure', n)
             pc += 1
             accu = offset_field(self.env, n) # offset_field
         elif instr == OP_GETGLOBAL:
@@ -1250,9 +1318,14 @@ else:
         return array.array('i', data)
 
 def entry_point(argv):
+    from rpython.rlib.jit import set_user_param
+    jit_params = os.environ.get('PYPYJIT')
+    if jit_params:
+        set_user_param(None, jit_params)
+
     exe_dict = parse_executable(open(argv[1], 'rb').read())
     bytecode = make_int_array(exe_dict['CODE'])
-    prims = Prims(exe_dict['PRIM'].split('\0'), argv)
+    prims = Prims(exe_dict['PRIM'].split('\0'), argv[2:])
     global_data = unmarshal(exe_dict['DATA']).get_fields()
 
     Frame(prims, global_data).eval(bytecode, pc=0)
